@@ -1,0 +1,101 @@
+server:
+  port: ${SERVER_PORT:9000}
+  forward-headers-strategy: framework
+
+spring:
+  application:
+    name: playswap-backend
+
+  main:
+    web-application-type: reactive
+
+  datasource:
+    url: ${DB_AUTH_URL:${DB_URL:jdbc:postgresql://localhost:5432/playswap}}
+    username: ${DB_AUTH_USERNAME:${DB_USERNAME:postgres}}
+    password: ${DB_AUTH_PASSWORD:${DB_PASSWORD:}}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: PlaySwapHikariPool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      idle-timeout: 30000
+      max-lifetime: 600000
+      connection-timeout: 20000
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  security:
+    oauth2:
+      client:
+        registration:
+          spotify:
+            client-id: ${SPOTIFY_CLIENT_ID:dummy-spotify-id}
+            client-secret: ${SPOTIFY_CLIENT_SECRET:dummy-spotify-secret}
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/spotify"
+            scope:
+              - playlist-read-private
+              - playlist-read-collaborative
+              - playlist-modify-public
+              - playlist-modify-private
+              - user-read-private
+              - user-read-email
+              - user-library-read
+            client-name: Spotify
+          google:
+            client-id: ${GOOGLE_CLIENT_ID:dummy-google-id}
+            client-secret: ${GOOGLE_CLIENT_SECRET:dummy-google-secret}
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/google"
+            scope:
+              - openid
+              - email
+              - profile
+              - https://www.googleapis.com/auth/youtube
+            client-name: Google
+        provider:
+          spotify:
+            authorization-uri: https://accounts.spotify.com/authorize
+            token-uri: https://accounts.spotify.com/api/token
+            user-info-uri: https://api.spotify.com/v1/me
+            user-name-attribute: id
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:${KEYCLOAK_BASE_URL:http://localhost:8181}/realms/${KEYCLOAK_REALM:playswap-realm}}
+
+keycloak:
+  base-url: ${KEYCLOAK_BASE_URL:http://localhost:8181}
+  realm: ${KEYCLOAK_REALM:playswap-realm}
+  client-id: ${KEYCLOAK_CLIENT_ID:playswap-client-credentials-id}
+  client-secret: ${KEYCLOAK_CLIENT_SECRET:dummy-keycloak-secret}
+
+app:
+  frontend-url: ${FRONTEND_URL:https://playswap-frontend-4xqptpaxl-jus-tech.vercel.app}
+  token-encryption-key: ${TOKEN_ENCRYPTION_KEY:PlaySwapSecureTokenEncryptionDefaultKey2026!}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.justice.playswap: DEBUG
+    org.springframework.security: INFO

@@ -1,0 +1,51 @@
+server:
+  port: 0
+
+spring:
+  main:
+    web-application-type: reactive
+  datasource:
+    url: jdbc:h2:mem:playswap_test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+  security:
+    oauth2:
+      client:
+        registration:
+          spotify:
+            client-id: test-spotify-id
+            client-secret: test-spotify-secret
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/spotify"
+          google:
+            client-id: test-google-id
+            client-secret: test-google-secret
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/google"
+        provider:
+          spotify:
+            authorization-uri: https://accounts.spotify.com/authorize
+            token-uri: https://accounts.spotify.com/api/token
+            user-info-uri: https://api.spotify.com/v1/me
+            user-name-attribute: id
+      resourceserver:
+        jwt:
+          issuer-uri: https://test-auth-server/realms/test
+
+keycloak:
+  base-url: http://localhost:8181
+  realm: test-realm
+  client-id: test-client
+  client-secret: test-secret
+
+app:
+  frontend-url: http://localhost:5173
+  token-encryption-key: TestTokenEncryptionKey1234567890!
