@@ -1,4 +1,4 @@
-server:
+﻿server:
   port: ${SERVER_PORT:9000}
   forward-headers-strategy: framework
 
@@ -81,7 +81,7 @@ keycloak:
 
 app:
   frontend-url: ${FRONTEND_URL:https://playswap-frontend-4xqptpaxl-jus-tech.vercel.app}
-  token-encryption-key: ${TOKEN_ENCRYPTION_KEY:PlaySwapSecureTokenEncryptionDefaultKey2026!}
+  token-encryption-key: ${TOKEN_ENCRYPTION_KEY:${AES_SECRET_KEY:PlaySwapSecureTokenEncryptionDefaultKey2026!}}
 
 management:
   endpoints:
