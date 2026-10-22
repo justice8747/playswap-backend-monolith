@@ -12,9 +12,6 @@ import org.springframework.test.context.ActiveProfiles;
 class PlaySwapApplicationTests {
 
     @MockBean
-    private ReactiveJwtDecoder reactiveJwtDecoder;
-
-    @MockBean
     private ReactiveClientRegistrationRepository clientRegistrationRepository;
 
     @Test

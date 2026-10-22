@@ -26,6 +26,9 @@ import org.springframework.web.server.session.CookieWebSessionIdResolver;
 import org.springframework.web.server.session.WebSessionIdResolver;
 import reactor.core.publisher.Mono;
 
+import com.justice.playswap.auth.service.JwtService;
+import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
+import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import java.util.List;
 
 @Configuration
@@ -111,6 +114,11 @@ public class SecurityConfig {
     @Bean
     public ReactiveOAuth2UserService<OAuth2UserRequest, OAuth2User> oauth2UserService() {
         return new DefaultReactiveOAuth2UserService();
+    }
+
+    @Bean
+    public ReactiveJwtDecoder reactiveJwtDecoder(JwtService jwtService) {
+        return NimbusReactiveJwtDecoder.withSecretKey(jwtService.getHmacKey()).build();
     }
 
     @Bean

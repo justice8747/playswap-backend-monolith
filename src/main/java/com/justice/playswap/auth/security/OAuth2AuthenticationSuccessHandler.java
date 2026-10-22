@@ -2,7 +2,7 @@ package com.justice.playswap.auth.security;
 
 
 import com.justice.playswap.auth.entity.User;
-import com.justice.playswap.auth.service.KeycloakService;
+import com.justice.playswap.auth.service.JwtService;
 import com.justice.playswap.auth.service.UserService;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.RequiredArgsConstructor;
@@ -32,7 +32,7 @@ public class OAuth2AuthenticationSuccessHandler
         implements ServerAuthenticationSuccessHandler {
 
     private final UserService userService;
-    private final KeycloakService keycloakService;
+    private final JwtService jwtService;
     private final ReactiveOAuth2AuthorizedClientService authorizedClientService;
 
     @Value("${app.frontend-url}")
@@ -111,7 +111,7 @@ public class OAuth2AuthenticationSuccessHandler
                     }
 
                     return userMono
-                            .flatMap(user -> keycloakService.mintToken(user.getId(), user))
+                            .flatMap(user -> jwtService.mintToken(user.getId(), user))
                             .flatMap(jwt -> redirectWithCookie(exchange, jwt));
                 });
     }

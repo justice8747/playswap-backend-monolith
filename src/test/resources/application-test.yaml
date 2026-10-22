@@ -36,16 +36,7 @@ spring:
             token-uri: https://accounts.spotify.com/api/token
             user-info-uri: https://api.spotify.com/v1/me
             user-name-attribute: id
-      resourceserver:
-        jwt:
-          issuer-uri: https://test-auth-server/realms/test
-
-keycloak:
-  base-url: http://localhost:8181
-  realm: test-realm
-  client-id: test-client
-  client-secret: test-secret
-
 app:
   frontend-url: http://localhost:5173
   token-encryption-key: TestTokenEncryptionKey1234567890!
+  jwt-secret: TestJwtSigningKeyMustBeAtLeast32BytesLong1234567890!

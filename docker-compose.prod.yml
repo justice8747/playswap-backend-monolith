@@ -1,4 +1,4 @@
-﻿version: '3.8'
+version: '3.8'
 
 services:
   # -------------------------------------------------------
@@ -48,12 +48,9 @@ services:
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:?SPOTIFY_CLIENT_SECRET environment variable is required}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID environment variable is required}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET environment variable is required}
-      KEYCLOAK_URL: ${KEYCLOAK_URL:-https://playswap-keycloak.up.railway.app}
-      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-playswap}
-      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-playswap-web}
-      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
       FRONTEND_URL: ${FRONTEND_URL:-https://playswap-frontend-4xqptpaxl-jus-tech.vercel.app}
       AES_SECRET_KEY: ${AES_SECRET_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-${AES_SECRET_KEY:-}}
       JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
     depends_on:
       playswap-db:

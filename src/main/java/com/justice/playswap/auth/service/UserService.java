@@ -27,7 +27,6 @@ public class UserService {
     private final UserRepository userRepo;
     private final AccessTokenRepository accessTokerepo;
     private final PlatformTransactionManager transactionManager;
-    private final KeycloakService keycloakService;
 
     // ==========================================
     // DOOR A — Login or Register
@@ -153,23 +152,6 @@ public class UserService {
                         return Optional.of(t);
                     }
                 }
-            }
-
-            // 3. Fallback: Keycloak ID lookup
-            log.info("Attempting Keycloak ID lookup for ID {}...", userId);
-            try {
-                UUID dbUserId = keycloakService.getDbUserIdFromKeycloakId(userId.toString()).block();
-                if (dbUserId != null && !dbUserId.equals(userId)) {
-                    log.info("Keycloak resolved ID {} to DB User ID {}", userId, dbUserId);
-                    List<AccessToken> keycloakUserTokens = accessTokerepo.findAllByUserId(dbUserId);
-                    for (AccessToken t : keycloakUserTokens) {
-                        if (platformVariants.stream().anyMatch(v -> v.equalsIgnoreCase(t.getPlatform()))) {
-                            return Optional.of(t);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                log.warn("Keycloak lookup failed for user ID {}: {}", userId, e.getMessage());
             }
 
             log.info("No token found for userId {} on platform {}", userId, platform);
