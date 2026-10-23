@@ -1,5 +1,5 @@
 server:
-  port: ${SERVER_PORT:9000}
+  port: ${PORT:${SERVER_PORT:9000}}
   forward-headers-strategy: framework
 
 spring:
@@ -10,17 +10,23 @@ spring:
     web-application-type: reactive
 
   datasource:
-    url: ${DB_AUTH_URL:${DB_URL:jdbc:postgresql://localhost:5432/playswap}}
-    username: ${DB_AUTH_USERNAME:${DB_USERNAME:postgres}}
-    password: ${DB_AUTH_PASSWORD:${DB_PASSWORD:}}
+    # Prefer Neon/Render DATABASE_URL (jdbc: prefix added by Spring config),
+    # fall back to explicit DB_AUTH_URL, then local Docker default.
+    url: ${DB_AUTH_URL:${SPRING_DATASOURCE_URL:${DATABASE_URL_JDBC:jdbc:postgresql://localhost:5432/playswap}}}
+    username: ${DB_AUTH_USERNAME:${SPRING_DATASOURCE_USERNAME:postgres}}
+    password: ${DB_AUTH_PASSWORD:${SPRING_DATASOURCE_PASSWORD:}}
     driver-class-name: org.postgresql.Driver
     hikari:
       pool-name: PlaySwapHikariPool
-      maximum-pool-size: 10
-      minimum-idle: 2
+      maximum-pool-size: 5
+      minimum-idle: 1
       idle-timeout: 30000
       max-lifetime: 600000
       connection-timeout: 20000
+      # Required for Neon TLS connections
+      data-source-properties:
+        ssl: true
+        sslmode: require
 
   jpa:
     hibernate:
