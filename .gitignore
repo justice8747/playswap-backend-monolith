@@ -39,3 +39,12 @@ Thumbs.db
 
 ### Local environment files ###
 .env
+.neon
+node_modules/
+
+### Neon CLI / AI agent dev tooling ###
+neon.ts
+package.json
+package-lock.json
+skills-lock.json
+.agents/

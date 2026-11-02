@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -27,8 +28,8 @@ public class YtmusicService implements YtmusicOperations {
     @Override
     public Mono<List<SpotifyTrackDto>> getPlaylistTracks(String userId, String playlistId) {
         log.info("==> [YtmusicService] Fetching tracks in-process for playlist '{}' and user '{}'", playlistId, userId);
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> youtubeApiClient.getPlaylistTracks(playlistId, accessToken))
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                        accessToken -> youtubeApiClient.getPlaylistTracks(playlistId, accessToken))
                 .map(tracks -> tracks.stream().map(t -> SpotifyTrackDto.builder()
                         .trackId(t.getTrackId())
                         .title(t.getTitle())
@@ -36,7 +37,13 @@ public class YtmusicService implements YtmusicOperations {
                         .primaryArtist(t.getPrimaryArtist())
                         .build()
                 ).collect(Collectors.toList()))
-                .onErrorReturn(List.of());
+                .onErrorResume(error -> {
+                    if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseError
+                            && responseError.getStatusCode().value() == 401) {
+                        return Mono.error(error);
+                    }
+                    return Mono.just(List.of());
+                });
     }
 
     @Override
@@ -47,10 +54,13 @@ public class YtmusicService implements YtmusicOperations {
                 .title(track.getTitle())
                 .artist(track.getArtists())
                 .primaryArtist(track.getPrimaryArtist())
+                .album(track.getAlbum())
+                .durationMs(track.getDurationMs())
+                .isrc(track.getIsrc())
                 .build();
 
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> trackMatchingService.analyzeTrack(request, accessToken))
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                        accessToken -> trackMatchingService.analyzeTrack(request, accessToken))
                 .onErrorResume(err -> {
                     // Try without accessToken if token retrieval fails (InnerTube tiers 2 & 3 work without tokens)
                     log.warn("Attempting unauthenticated InnerTube search for '{}': {}", track.getTitle(), err.getMessage());
@@ -70,8 +80,8 @@ public class YtmusicService implements YtmusicOperations {
     @Override
     public Mono<CreatePlaylistResponseDto> createPlaylist(String userId, String name, String description) {
         log.info("==> [YtmusicService] In-process create playlist '{}' for user '{}'", name, userId);
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> youtubeApiClient.createPlaylist(name, description, accessToken))
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                        accessToken -> youtubeApiClient.createPlaylist(name, description, accessToken))
                 .map(res -> CreatePlaylistResponseDto.builder()
                         .playlistId(res.getPlaylistId())
                         .name(res.getName())
@@ -83,7 +93,19 @@ public class YtmusicService implements YtmusicOperations {
     public Mono<Boolean> addTracksToPlaylist(String userId, String playlistId, List<String> videoIds) {
         log.info("==> [YtmusicService] In-process adding {} tracks to playlist '{}' for user '{}'",
                 videoIds != null ? videoIds.size() : 0, playlistId, userId);
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> youtubeApiClient.addTracksToPlaylist(playlistId, videoIds, accessToken));
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                accessToken -> youtubeApiClient.addTracksToPlaylist(playlistId, videoIds, accessToken));
+    }
+
+    @Override
+    public Mono<Set<String>> addTracksToPlaylistWithResults(String userId, String playlistId, List<String> videoIds) {
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                accessToken -> youtubeApiClient.addTracksToPlaylistWithResults(playlistId, videoIds, accessToken));
+    }
+
+    @Override
+    public Mono<Boolean> deletePlaylist(String userId, String playlistId) {
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                accessToken -> youtubeApiClient.deletePlaylist(playlistId, accessToken));
     }
 }

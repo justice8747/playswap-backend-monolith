@@ -22,6 +22,7 @@ import java.util.stream.Collectors;
 public class PlaylistTransferExecutionService {
 
     private static final int MAX_RETRIES = 3;
+    private static final int MINIMUM_INSERTION_PERCENT = 90;
 
     private final TransferSessionRepository sessionRepository;
     private final TransferJobRepository jobRepository;
@@ -62,10 +63,17 @@ public class PlaylistTransferExecutionService {
                 .then(Mono.defer(() -> {
                     // Update final session status based on jobs state
                     List<TransferJob> updatedJobs = jobRepository.findBySessionId(session.getId());
-                    boolean anyFailed = updatedJobs.stream().anyMatch(j -> TransferStatus.FAILED.name().equalsIgnoreCase(j.getStatus()) || TransferStatus.PARTIALLY_COMPLETED.name().equalsIgnoreCase(j.getStatus()));
+                    boolean anyFailed = updatedJobs.stream().anyMatch(j ->
+                            TransferStatus.FAILED.name().equalsIgnoreCase(j.getStatus())
+                                    || TransferStatus.PARTIALLY_COMPLETED.name().equalsIgnoreCase(j.getStatus()));
                     boolean allCompleted = updatedJobs.stream().allMatch(j -> TransferStatus.COMPLETED.name().equalsIgnoreCase(j.getStatus()));
+                    boolean allFailed = !updatedJobs.isEmpty() && updatedJobs.stream()
+                            .allMatch(j -> TransferStatus.FAILED.name().equalsIgnoreCase(j.getStatus()));
 
-                    String finalStatus = allCompleted ? TransferStatus.COMPLETED.name() : (anyFailed ? TransferStatus.PARTIALLY_COMPLETED.name() : TransferStatus.COMPLETED.name());
+                    String finalStatus = allCompleted ? TransferStatus.COMPLETED.name()
+                            : allFailed ? TransferStatus.FAILED.name()
+                            : anyFailed ? TransferStatus.PARTIALLY_COMPLETED.name()
+                            : TransferStatus.COMPLETED.name();
                     session.setStatus(finalStatus);
                     sessionRepository.save(session);
 
@@ -85,6 +93,10 @@ public class PlaylistTransferExecutionService {
         jobRepository.save(job);
 
         List<TransferItem> allItems = itemRepository.findByJobId(job.getId());
+        Set<String> matchedTrackIds = allItems.stream()
+                .map(TransferItem::getTargetTrackId)
+                .filter(id -> id != null && !id.isBlank())
+                .collect(Collectors.toSet());
 
         // Determine items eligible for transfer/retry
         List<TransferItem> eligibleItems = allItems.stream()
@@ -97,7 +109,7 @@ public class PlaylistTransferExecutionService {
                 })
                 .collect(Collectors.toList());
 
-        if (eligibleItems.isEmpty()) {
+        if (matchedTrackIds.isEmpty()) {
             log.warn("No eligible tracks to transfer for job {} (Playlist: {})", job.getId(), job.getSourcePlaylistName());
             job.setStatus("TRANSFERRED_EMPTY");
             jobRepository.save(job);
@@ -107,6 +119,27 @@ public class PlaylistTransferExecutionService {
                     .targetPlaylistId(job.getTargetPlaylistId())
                     .targetPlaylistUrl(job.getTargetPlaylistUrl())
                     .transferredTracksCount(0)
+                    .build());
+        }
+
+        if (eligibleItems.isEmpty()) {
+            Set<String> insertedTrackIds = getSuccessfulTrackIds(allItems);
+            if (!meetsInsertionThreshold(insertedTrackIds.size(), matchedTrackIds.size())) {
+                return rollbackFailedTransfer(userIdStr, job, targetPlatform, allItems,
+                        job.getTargetPlaylistId(), job.getTargetPlaylistUrl(),
+                        insertedTrackIds.size(), matchedTrackIds.size());
+            }
+
+            job.setStatus(insertedTrackIds.size() == matchedTrackIds.size()
+                    ? TransferStatus.COMPLETED.name()
+                    : TransferStatus.PARTIALLY_COMPLETED.name());
+            jobRepository.save(job);
+            return Mono.just(TransferredPlaylistDto.builder()
+                    .jobId(job.getId())
+                    .playlistName(job.getSourcePlaylistName() != null ? job.getSourcePlaylistName() : "Playlist")
+                    .targetPlaylistId(job.getTargetPlaylistId())
+                    .targetPlaylistUrl(job.getTargetPlaylistUrl())
+                    .transferredTracksCount(insertedTrackIds.size())
                     .build());
         }
 
@@ -137,76 +170,51 @@ public class PlaylistTransferExecutionService {
                     job.setTargetPlaylistUrl(created.getPlaylistUrl());
                     jobRepository.save(job);
 
-                    // Transfer items with granular error handling
                     List<String> trackIdsToBatch = eligibleItems.stream()
                             .filter(item -> !ItemStatus.SUCCESS.name().equalsIgnoreCase(item.getStatus()))
                             .map(TransferItem::getTargetTrackId)
                             .distinct()
                             .collect(Collectors.toList());
 
+                    Mono<Set<String>> addTracksMono;
                     if (trackIdsToBatch.isEmpty()) {
-                        // All eligible items were already transferred
-                        job.setStatus(TransferStatus.COMPLETED.name());
-                        jobRepository.save(job);
-                        long successCount = allItems.stream().filter(i -> ItemStatus.SUCCESS.name().equalsIgnoreCase(i.getStatus())).count();
-                        return Mono.just(TransferredPlaylistDto.builder()
-                                .jobId(job.getId())
-                                .playlistName(created.getName() != null ? created.getName() : job.getSourcePlaylistName())
-                                .targetPlaylistId(created.getPlaylistId())
-                                .targetPlaylistUrl(created.getPlaylistUrl())
-                                .transferredTracksCount((int) successCount)
-                                .build());
-                    }
-
-                    Mono<Boolean> addTracksMono;
-                    if (targetPlatform.contains("SPOTIFY")) {
-                        addTracksMono = spotifyOperations.addTracksToPlaylist(userIdStr, created.getPlaylistId(), trackIdsToBatch);
+                        addTracksMono = Mono.just(Set.of());
+                    } else if (targetPlatform.contains("SPOTIFY")) {
+                        addTracksMono = spotifyOperations.addTracksToPlaylistWithResults(
+                                userIdStr, created.getPlaylistId(), trackIdsToBatch);
                     } else {
-                        addTracksMono = ytmusicOperations.addTracksToPlaylist(userIdStr, created.getPlaylistId(), trackIdsToBatch);
+                        addTracksMono = ytmusicOperations.addTracksToPlaylistWithResults(
+                                userIdStr, created.getPlaylistId(), trackIdsToBatch);
                     }
 
                     return addTracksMono
-                            .map(success -> {
-                                for (TransferItem item : eligibleItems) {
-                                    if (!ItemStatus.SUCCESS.name().equalsIgnoreCase(item.getStatus())) {
-                                        item.setStatus(ItemStatus.SUCCESS.name());
-                                        item.setErrorMessage(null);
-                                        itemRepository.save(item);
-                                    }
-                                }
-                                job.setStatus(TransferStatus.COMPLETED.name());
-                                jobRepository.save(job);
-                                saveHistoryRecord(userIdStr, session, job, created, eligibleItems.size(), allItems.size());
-                                return TransferredPlaylistDto.builder()
-                                        .jobId(job.getId())
-                                        .playlistName(created.getName() != null ? created.getName() : job.getSourcePlaylistName())
-                                        .targetPlaylistId(created.getPlaylistId())
-                                        .targetPlaylistUrl(created.getPlaylistUrl())
-                                        .transferredTracksCount(eligibleItems.size())
-                                        .build();
+                            .onErrorResume(error -> {
+                                log.error("Track insertion failed for job {}: {}", job.getId(), error.getMessage());
+                                return Mono.just(Set.of());
                             })
-                            .onErrorResume(e -> {
-                                log.error("Batch add tracks failed for job {}: {}. Updating item-level retry state.", job.getId(), e.getMessage());
-                                for (TransferItem item : eligibleItems) {
-                                    if (!ItemStatus.SUCCESS.name().equalsIgnoreCase(item.getStatus())) {
-                                        int retries = item.getRetryCount() != null ? item.getRetryCount() + 1 : 1;
-                                        item.setRetryCount(retries);
-                                        item.setErrorMessage(e.getMessage());
-                                        item.setStatus(ItemStatus.FAILED.name());
-                                        itemRepository.save(item);
-                                    }
-                                }
-                                job.setRetryCount((job.getRetryCount() != null ? job.getRetryCount() : 0) + 1);
-                                job.setStatus(TransferStatus.PARTIALLY_COMPLETED.name());
-                                jobRepository.save(job);
+                            .flatMap(insertedNow -> {
+                                Set<String> insertedTrackIds = getSuccessfulTrackIds(allItems);
+                                insertedTrackIds.addAll(insertedNow);
+                                updateItemInsertionResults(allItems, trackIdsToBatch, insertedTrackIds);
 
-                                long successCount = allItems.stream().filter(i -> ItemStatus.SUCCESS.name().equalsIgnoreCase(i.getStatus())).count();
+                                if (!meetsInsertionThreshold(insertedTrackIds.size(), matchedTrackIds.size())) {
+                                    return rollbackFailedTransfer(userIdStr, job, targetPlatform, allItems,
+                                            created.getPlaylistId(), created.getPlaylistUrl(),
+                                            insertedTrackIds.size(), matchedTrackIds.size());
+                                }
+
+                                job.setStatus(insertedTrackIds.size() == matchedTrackIds.size()
+                                        ? TransferStatus.COMPLETED.name()
+                                        : TransferStatus.PARTIALLY_COMPLETED.name());
+                                jobRepository.save(job);
+                                saveHistoryRecord(userIdStr, session, job, created,
+                                        insertedTrackIds.size(), allItems.size());
                                 return Mono.just(TransferredPlaylistDto.builder()
                                         .jobId(job.getId())
                                         .playlistName(created.getName() != null ? created.getName() : job.getSourcePlaylistName())
                                         .targetPlaylistId(created.getPlaylistId())
                                         .targetPlaylistUrl(created.getPlaylistUrl())
-                                        .transferredTracksCount((int) successCount)
+                                        .transferredTracksCount(insertedTrackIds.size())
                                         .build());
                             });
                 })
@@ -215,6 +223,114 @@ public class PlaylistTransferExecutionService {
                     job.setStatus(TransferStatus.FAILED.name());
                     jobRepository.save(job);
                     return Mono.empty();
+                });
+    }
+
+    private Set<String> getSuccessfulTrackIds(List<TransferItem> items) {
+        return items.stream()
+                .filter(item -> ItemStatus.SUCCESS.name().equalsIgnoreCase(item.getStatus()))
+                .map(TransferItem::getTargetTrackId)
+                .filter(id -> id != null && !id.isBlank())
+                .collect(Collectors.toSet());
+    }
+
+    private void updateItemInsertionResults(
+            List<TransferItem> allItems,
+            List<String> attemptedTrackIds,
+            Set<String> insertedTrackIds) {
+        Set<String> attempted = new HashSet<>(attemptedTrackIds);
+        for (TransferItem item : allItems) {
+            String targetTrackId = item.getTargetTrackId();
+            if (targetTrackId == null || targetTrackId.isBlank()) {
+                continue;
+            }
+
+            if (insertedTrackIds.contains(targetTrackId)) {
+                item.setStatus(ItemStatus.SUCCESS.name());
+                item.setErrorMessage(null);
+                itemRepository.save(item);
+            } else if (attempted.contains(targetTrackId)) {
+                item.setStatus(ItemStatus.FAILED.name());
+                item.setRetryCount(item.getRetryCount() != null ? item.getRetryCount() + 1 : 1);
+                item.setErrorMessage("Destination platform did not confirm track insertion");
+                itemRepository.save(item);
+            }
+        }
+    }
+
+    private boolean meetsInsertionThreshold(int insertedTrackCount, int matchedTrackCount) {
+        return matchedTrackCount > 0
+                && insertedTrackCount * 100L >= matchedTrackCount * MINIMUM_INSERTION_PERCENT;
+    }
+
+    private Mono<TransferredPlaylistDto> rollbackFailedTransfer(
+            String userIdStr,
+            TransferJob job,
+            String targetPlatform,
+            List<TransferItem> allItems,
+            String targetPlaylistId,
+            String targetPlaylistUrl,
+            int insertedTrackCount,
+            int matchedTrackCount) {
+        Mono<Boolean> deletePlaylist;
+        if (targetPlaylistId == null || targetPlaylistId.isBlank()) {
+            deletePlaylist = Mono.just(true);
+        } else if (targetPlatform.contains("SPOTIFY")) {
+            deletePlaylist = spotifyOperations.deletePlaylist(userIdStr, targetPlaylistId);
+        } else {
+            deletePlaylist = ytmusicOperations.deletePlaylist(userIdStr, targetPlaylistId);
+        }
+
+        return deletePlaylist
+                .defaultIfEmpty(false)
+                .onErrorResume(error -> {
+                    log.error("Could not roll back destination playlist {} for job {}: {}",
+                            targetPlaylistId, job.getId(), error.getMessage());
+                    return Mono.just(false);
+                })
+                .map(deleted -> {
+                    String failureReason = String.format(
+                            "Only %d of %d matched tracks were inserted; minimum required is %d%%. Playlist rollback %s.",
+                            insertedTrackCount,
+                            matchedTrackCount,
+                            MINIMUM_INSERTION_PERCENT,
+                            deleted ? "succeeded" : "failed");
+                    for (TransferItem item : allItems) {
+                        if (item.getTargetTrackId() == null || item.getTargetTrackId().isBlank()) {
+                            continue;
+                        }
+                        boolean itemWasInserted = ItemStatus.SUCCESS.name().equalsIgnoreCase(item.getStatus());
+                        if (deleted) {
+                            if (itemWasInserted) {
+                                item.setRetryCount(item.getRetryCount() != null ? item.getRetryCount() + 1 : 1);
+                            }
+                            item.setStatus(ItemStatus.FAILED.name());
+                            item.setErrorMessage(failureReason);
+                        } else if (!itemWasInserted) {
+                            item.setStatus(ItemStatus.FAILED.name());
+                            item.setErrorMessage(failureReason);
+                        }
+                        itemRepository.save(item);
+                    }
+
+                    if (deleted) {
+                        job.setTargetPlaylistId(null);
+                        job.setTargetPlaylistUrl(null);
+                    } else {
+                        job.setTargetPlaylistId(targetPlaylistId);
+                        job.setTargetPlaylistUrl(targetPlaylistUrl);
+                    }
+                    job.setStatus(TransferStatus.FAILED.name());
+                    job.setRetryCount((job.getRetryCount() != null ? job.getRetryCount() : 0) + 1);
+                    jobRepository.save(job);
+
+                    return TransferredPlaylistDto.builder()
+                            .jobId(job.getId())
+                            .playlistName(job.getSourcePlaylistName() != null ? job.getSourcePlaylistName() : "Playlist")
+                            .targetPlaylistId(deleted ? null : targetPlaylistId)
+                            .targetPlaylistUrl(deleted ? null : targetPlaylistUrl)
+                            .transferredTracksCount(0)
+                            .build();
                 });
     }
 

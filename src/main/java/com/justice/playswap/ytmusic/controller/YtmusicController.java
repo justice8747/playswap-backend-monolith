@@ -48,8 +48,8 @@ public class YtmusicController {
             }
         }
 
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> youtubeApiClient.getUserPlaylists(accessToken))
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                        youtubeApiClient::getUserPlaylists)
                 .doOnNext(playlists -> playlistCacheService.put(userId, playlists));
     }
 
@@ -65,8 +65,8 @@ public class YtmusicController {
         }
 
         log.info("==> [YtmusicController] Request received for YouTube playlist tracks: '{}' | User: '{}'", playlistId, userId);
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> youtubeApiClient.getPlaylistTracks(playlistId, accessToken));
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                accessToken -> youtubeApiClient.getPlaylistTracks(playlistId, accessToken));
     }
 
     @PostMapping("/analyze-track")
@@ -80,8 +80,8 @@ public class YtmusicController {
             return Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing authenticated user"));
         }
 
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> trackMatchingService.analyzeTrack(request, accessToken))
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                        accessToken -> trackMatchingService.analyzeTrack(request, accessToken))
                 .onErrorResume(err -> trackMatchingService.analyzeTrack(request, null));
     }
 
@@ -97,8 +97,8 @@ public class YtmusicController {
         }
 
         log.info("==> [YtmusicController] Creating YouTube playlist '{}' for user '{}'", request.getName(), userId);
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> youtubeApiClient.createPlaylist(request.getName(), request.getDescription(), accessToken));
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                accessToken -> youtubeApiClient.createPlaylist(request.getName(), request.getDescription(), accessToken));
     }
 
     @PostMapping("/playlists/{playlistId}/add-tracks")
@@ -115,8 +115,8 @@ public class YtmusicController {
 
         log.info("==> [YtmusicController] Adding {} tracks to YouTube playlist '{}' for user '{}'",
                 request.getVideoIds() != null ? request.getVideoIds().size() : 0, playlistId, userId);
-        return tokenProvider.getValidAccessToken(userId, "youtube")
-                .flatMap(accessToken -> youtubeApiClient.addTracksToPlaylist(playlistId, request.getVideoIds(), accessToken));
+        return tokenProvider.withValidAccessToken(userId, "youtube",
+                accessToken -> youtubeApiClient.addTracksToPlaylist(playlistId, request.getVideoIds(), accessToken));
     }
 
     private String resolveUserId(Jwt jwt, String headerUserId) {

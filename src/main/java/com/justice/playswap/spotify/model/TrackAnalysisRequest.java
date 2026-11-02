@@ -14,4 +14,7 @@ public class TrackAnalysisRequest {
     private String title;
     private String artist;
     private String primaryArtist;
+    private String album;
+    private long durationMs;
+    private String isrc;
 }

@@ -48,8 +48,8 @@ public class SpotifyController {
             }
         }
 
-        return tokenProvider.getValidAccessToken(userId, "spotify")
-                .flatMap(accessToken -> spotifyApiClient.getUserPlaylists(accessToken))
+        return tokenProvider.withValidAccessToken(userId, "spotify",
+                        spotifyApiClient::getUserPlaylists)
                 .doOnNext(playlists -> playlistCacheService.put(userId, playlists));
     }
 
@@ -65,8 +65,8 @@ public class SpotifyController {
         }
 
         log.info("==> [SpotifyController] Request received for playlist: '{}' | User: '{}'", playlistId, userId);
-        return tokenProvider.getValidAccessToken(userId, "spotify")
-                .flatMap(accessToken -> spotifyApiClient.getPlaylistTracks(playlistId, accessToken));
+        return tokenProvider.withValidAccessToken(userId, "spotify",
+                accessToken -> spotifyApiClient.getPlaylistTracks(playlistId, accessToken));
     }
 
     @PostMapping("/analyze-track")
@@ -80,8 +80,8 @@ public class SpotifyController {
             return Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing authenticated user"));
         }
 
-        return tokenProvider.getValidAccessToken(userId, "spotify")
-                .flatMap(accessToken -> trackMatchingService.analyzeTrack(request, accessToken));
+        return tokenProvider.withValidAccessToken(userId, "spotify",
+                accessToken -> trackMatchingService.analyzeTrack(request, accessToken));
     }
 
     @PostMapping("/playlists/create")
@@ -96,8 +96,8 @@ public class SpotifyController {
         }
 
         log.info("==> [SpotifyController] Creating Spotify playlist '{}' for user '{}'", request.getName(), userId);
-        return tokenProvider.getValidAccessToken(userId, "spotify")
-                .flatMap(accessToken -> spotifyApiClient.createPlaylist(request.getName(), request.getDescription(), accessToken));
+        return tokenProvider.withValidAccessToken(userId, "spotify",
+                accessToken -> spotifyApiClient.createPlaylist(request.getName(), request.getDescription(), accessToken));
     }
 
     @PostMapping("/playlists/{playlistId}/add-tracks")
@@ -114,8 +114,8 @@ public class SpotifyController {
 
         log.info("==> [SpotifyController] Adding {} tracks to Spotify playlist '{}' for user '{}'",
                 request.getTrackIds() != null ? request.getTrackIds().size() : 0, playlistId, userId);
-        return tokenProvider.getValidAccessToken(userId, "spotify")
-                .flatMap(accessToken -> spotifyApiClient.addTracksToPlaylist(playlistId, request.getTrackIds(), accessToken));
+        return tokenProvider.withValidAccessToken(userId, "spotify",
+                accessToken -> spotifyApiClient.addTracksToPlaylist(playlistId, request.getTrackIds(), accessToken));
     }
 
     private String resolveUserId(Jwt jwt, String headerUserId) {

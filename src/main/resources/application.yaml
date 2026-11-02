@@ -1,5 +1,105 @@
+# server:
+#   port: ${PORT:${SERVER_PORT:8000}}
+#   forward-headers-strategy: framework
+
+# spring:
+#   application:
+#     name: playswap-backend
+
+#   main:
+#     web-application-type: reactive
+
+#   datasource:
+#     # Prefer Neon/Render DATABASE_URL (jdbc: prefix added by Spring config),
+#     # fall back to explicit DB_AUTH_URL, then local Docker default.
+#     url: ${DB_AUTH_URL:${SPRING_DATASOURCE_URL:${DATABASE_URL_JDBC:jdbc:postgresql://localhost:5432/playswap}}}
+#     username: ${DB_AUTH_USERNAME:${SPRING_DATASOURCE_USERNAME:postgres}}
+#     password: ${DB_AUTH_PASSWORD:${SPRING_DATASOURCE_PASSWORD:}}
+#     driver-class-name: org.postgresql.Driver
+#     hikari:
+#       pool-name: PlaySwapHikariPool
+#       maximum-pool-size: 5
+#       minimum-idle: 1
+#       idle-timeout: 30000
+#       max-lifetime: 600000
+#       connection-timeout: 20000
+#       # Required for Neon TLS connections
+#       data-source-properties:
+#         ssl: true
+#         sslmode: require
+
+#   jpa:
+#     hibernate:
+#       ddl-auto: update
+#     show-sql: false
+#     properties:
+#       hibernate:
+#         dialect: org.hibernate.dialect.PostgreSQLDialect
+#         jdbc:
+#           batch_size: 50
+#         order_inserts: true
+#         order_updates: true
+
+#   security:
+#     oauth2:
+#       client:
+#         registration:
+#           spotify:
+#             client-id: ${SPOTIFY_CLIENT_ID:dummy-spotify-id}
+#             client-secret: ${SPOTIFY_CLIENT_SECRET:dummy-spotify-secret}
+#             authorization-grant-type: authorization_code
+#             redirect-uri: "http://127.0.0.1:9000/login/oauth2/code/spotify"
+#             scope:
+#               - playlist-read-private
+#               - playlist-read-collaborative
+#               - playlist-modify-public
+#               - playlist-modify-private
+#               - user-read-private
+#               - user-read-email
+#               - user-library-read
+#             client-name: Spotify
+#           google:
+#             client-id: ${GOOGLE_CLIENT_ID:dummy-google-id}
+#             client-secret: ${GOOGLE_CLIENT_SECRET:dummy-google-secret}
+#             authorization-grant-type: authorization_code
+#             redirect-uri: "http://127.0.0.1:9000/login/oauth2/code/google"
+#             scope:
+#               - openid
+#               - email
+#               - profile
+#               - https://www.googleapis.com/auth/youtube
+#             client-name: Google
+#         provider:
+#           spotify:
+#             authorization-uri: https://accounts.spotify.com/authorize
+#             token-uri: https://accounts.spotify.com/api/token
+#             user-info-uri: https://api.spotify.com/v1/me
+#             user-name-attribute: id
+# app:
+#   frontend-url: ${FRONTEND_URL:https://playswap-frontend-4xqptpaxl-jus-tech.vercel.app}
+#   token-encryption-key: ${TOKEN_ENCRYPTION_KEY:${AES_SECRET_KEY:PlaySwapSecureTokenEncryptionDefaultKey2026!}}
+#   jwt-secret: ${JWT_SECRET:${AES_SECRET_KEY:PlaySwapSecureJwtSigningDefaultKey2026MustBeAtLeast32BytesLong!}}
+
+# management:
+#   endpoints:
+#     web:
+#       exposure:
+#         include: health,info,prometheus
+#   endpoint:
+#     health:
+#       show-details: when-authorized
+#       probes:
+#         enabled: true
+
+# logging:
+#   level:
+#     root: INFO
+#     com.justice.playswap: DEBUG
+#     org.springframework.security: INFO
+
+
 server:
-  port: ${PORT:${SERVER_PORT:9000}}
+  port: ${SERVER_PORT:9000}
   forward-headers-strategy: framework
 
 spring:
@@ -10,11 +110,10 @@ spring:
     web-application-type: reactive
 
   datasource:
-    # Prefer Neon/Render DATABASE_URL (jdbc: prefix added by Spring config),
-    # fall back to explicit DB_AUTH_URL, then local Docker default.
-    url: ${DB_AUTH_URL:${SPRING_DATASOURCE_URL:${DATABASE_URL_JDBC:jdbc:postgresql://localhost:5432/playswap}}}
-    username: ${DB_AUTH_USERNAME:${SPRING_DATASOURCE_USERNAME:postgres}}
-    password: ${DB_AUTH_PASSWORD:${SPRING_DATASOURCE_PASSWORD:}}
+    # Strictly points to your deployed database with NO localhost fallback
+    url: ${DB_AUTH_URL}
+    username: ${DB_AUTH_USERNAME}
+    password: ${DB_AUTH_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
       pool-name: PlaySwapHikariPool
@@ -23,7 +122,6 @@ spring:
       idle-timeout: 30000
       max-lifetime: 600000
       connection-timeout: 20000
-      # Required for Neon TLS connections
       data-source-properties:
         ssl: true
         sslmode: require
@@ -45,8 +143,8 @@ spring:
       client:
         registration:
           spotify:
-            client-id: ${SPOTIFY_CLIENT_ID:dummy-spotify-id}
-            client-secret: ${SPOTIFY_CLIENT_SECRET:dummy-spotify-secret}
+            client-id: ${SPOTIFY_CLIENT_ID}
+            client-secret: ${SPOTIFY_CLIENT_SECRET}
             authorization-grant-type: authorization_code
             redirect-uri: "{baseUrl}/login/oauth2/code/spotify"
             scope:
@@ -59,8 +157,8 @@ spring:
               - user-library-read
             client-name: Spotify
           google:
-            client-id: ${GOOGLE_CLIENT_ID:dummy-google-id}
-            client-secret: ${GOOGLE_CLIENT_SECRET:dummy-google-secret}
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
             authorization-grant-type: authorization_code
             redirect-uri: "{baseUrl}/login/oauth2/code/google"
             scope:
@@ -75,10 +173,11 @@ spring:
             token-uri: https://accounts.spotify.com/api/token
             user-info-uri: https://api.spotify.com/v1/me
             user-name-attribute: id
+
 app:
-  frontend-url: ${FRONTEND_URL:https://playswap-frontend-4xqptpaxl-jus-tech.vercel.app}
-  token-encryption-key: ${TOKEN_ENCRYPTION_KEY:${AES_SECRET_KEY:PlaySwapSecureTokenEncryptionDefaultKey2026!}}
-  jwt-secret: ${JWT_SECRET:${AES_SECRET_KEY:PlaySwapSecureJwtSigningDefaultKey2026MustBeAtLeast32BytesLong!}}
+  frontend-url: ${FRONTEND_URL}
+  token-encryption-key: ${TOKEN_ENCRYPTION_KEY}
+  jwt-secret: ${JWT_SECRET}
 
 management:
   endpoints:

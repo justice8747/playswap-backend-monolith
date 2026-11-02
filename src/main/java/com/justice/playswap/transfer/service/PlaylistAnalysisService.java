@@ -87,7 +87,7 @@ public class PlaylistAnalysisService {
                                 AtomicInteger jobUnmatched = new AtomicInteger(0);
 
                                 return Flux.fromIterable(tracks)
-                                        .flatMap(track -> processTrack(userIdStr, savedJob.getId(), request.getSourcePlatform(), request.getTargetPlatform(), track)
+                                        .flatMap(track -> processTrack(userIdStr, savedJob.getId(), request.getSourcePlatform(), request.getTargetPlatform(), track, totalCachedCount)
                                                 .doOnNext(matched -> {
                                                     totalTracksCount.incrementAndGet();
                                                     if (matched) {
@@ -136,83 +136,195 @@ public class PlaylistAnalysisService {
                 }));
     }
 
-    private Mono<Boolean> processTrack(String userId, UUID jobId, String sourcePlatform, String targetPlatform, SpotifyTrackDto track) {
-        // Check existing mapping database cache (Tier 1)
-        Optional<SongMapping> existingMapping = songMappingRepository
-                .findBySourcePlatformAndSourceTrackIdAndDestinationPlatform(sourcePlatform, track.getTrackId(), targetPlatform);
+    private Mono<Boolean> processTrack(String userId, UUID jobId, String sourcePlatform, String targetPlatform,
+                                       SpotifyTrackDto track, AtomicInteger totalCachedCount) {
+        return Mono.fromCallable(() -> songMappingRepository
+                        .findBySourcePlatformAndSourceTrackIdAndDestinationPlatform(
+                                sourcePlatform, track.getTrackId(), targetPlatform))
+                .map(mapping -> new MappingLookup(mapping, false))
+                .onErrorResume(error -> {
+                    log.error("Failed to look up cached mapping for source track '{}': {}",
+                            track.getTrackId(), error.getMessage(), error);
+                    return persistFailedAnalysisItem(jobId, track,
+                                    "Mapping lookup failed: " + error.getClass().getSimpleName())
+                            .map(ignored -> new MappingLookup(Optional.empty(), true));
+                })
+                .flatMap(lookup -> {
+                    if (lookup.failed()) {
+                        return Mono.just(false);
+                    }
+                    if (lookup.mapping().isPresent()) {
+                        SongMapping mapping = lookup.mapping().get();
+                        if (isUsableCachedTargetId(mapping.getDestinationTrackId(), targetPlatform)) {
+                            mapping.setLastUsedAt(LocalDateTime.now());
+                            songMappingRepository.save(mapping);
 
-        if (existingMapping.isPresent()) {
-            SongMapping mapping = existingMapping.get();
-            mapping.setLastUsedAt(LocalDateTime.now());
-            songMappingRepository.save(mapping);
+                            TransferItem item = TransferItem.builder()
+                                    .jobId(jobId)
+                                    .sourceTrackId(track.getTrackId())
+                                    .targetTrackId(mapping.getDestinationTrackId())
+                                    .matchedTrackUri(mapping.getDestinationTrackId())
+                                    .status(ItemStatus.PENDING.name())
+                                    .confidenceScore(mapping.getConfidenceScore())
+                                    .retryCount(0)
+                                    .build();
+                            itemRepository.save(item);
+                            totalCachedCount.incrementAndGet();
+                            return Mono.just(true);
+                        }
+
+                        log.warn("Ignoring invalid cached destination track ID '{}' for platform '{}' and source track '{}'",
+                                mapping.getDestinationTrackId(), targetPlatform, track.getTrackId());
+                        songMappingRepository.delete(mapping);
+                    }
+
+                    return analyzeAndPersistTrack(userId, jobId, sourcePlatform, targetPlatform, track);
+                });
+    }
+
+    private Mono<Boolean> analyzeAndPersistTrack(
+            String userId,
+            UUID jobId,
+            String sourcePlatform,
+            String targetPlatform,
+            SpotifyTrackDto track) {
+        return Mono.defer(() -> {
+                    String target = targetPlatform != null ? targetPlatform.toUpperCase(Locale.ROOT) : "";
+                    return target.contains("SPOTIFY")
+                            ? spotifyOperations.analyzeTrack(userId, track)
+                            : ytmusicOperations.analyzeTrack(userId, track);
+                })
+                .map(result -> new AnalysisOutcome(result, null))
+                .switchIfEmpty(Mono.just(new AnalysisOutcome(null, "Analysis provider returned no result")))
+                .onErrorResume(error -> {
+                    log.error("Track analysis failed for source track '{}': {}",
+                            track.getTrackId(), error.getMessage(), error);
+                    return Mono.just(new AnalysisOutcome(null, describeAnalysisError(error)));
+                })
+                .flatMap(outcome -> outcome.failureReason() != null
+                        ? persistFailedAnalysisItem(jobId, track, outcome.failureReason())
+                        : Mono.fromCallable(() -> persistAnalysisResult(
+                                jobId, sourcePlatform, targetPlatform, track, outcome.result())));
+    }
+
+    private boolean persistAnalysisResult(
+            UUID jobId,
+            String sourcePlatform,
+            String targetPlatform,
+            SpotifyTrackDto track,
+            TrackAnalysisResultDto result) {
+        String matchedTargetId = result != null && result.isMatched()
+                ? getMatchedTargetId(result, targetPlatform)
+                : null;
+
+        if (matchedTargetId != null && !matchedTargetId.isBlank()) {
+            SongMapping newMapping = SongMapping.builder()
+                    .sourcePlatform(sourcePlatform)
+                    .sourceTrackId(track.getTrackId())
+                    .destinationPlatform(targetPlatform)
+                    .destinationTrackId(matchedTargetId)
+                    .title(track.getTitle())
+                    .artist(track.getArtists())
+                    .confidenceScore(result.getConfidence())
+                    .lastUsedAt(LocalDateTime.now())
+                    .build();
+            songMappingRepository.save(newMapping);
 
             TransferItem item = TransferItem.builder()
                     .jobId(jobId)
                     .sourceTrackId(track.getTrackId())
-                    .targetTrackId(mapping.getDestinationTrackId())
-                    .matchedTrackUri(mapping.getDestinationTrackId())
+                    .targetTrackId(matchedTargetId)
+                    .matchedTrackUri(matchedTargetId)
                     .status(ItemStatus.PENDING.name())
-                    .confidenceScore(mapping.getConfidenceScore())
+                    .confidenceScore(result.getConfidence())
                     .retryCount(0)
                     .build();
             itemRepository.save(item);
-            return Mono.just(true);
+            return true;
         }
 
-        // Search via target module in-process
-        Mono<TrackAnalysisResultDto> analysisMono;
-        String target = targetPlatform != null ? targetPlatform.toUpperCase() : "";
-        if (target.contains("SPOTIFY")) {
-            analysisMono = spotifyOperations.analyzeTrack(userId, track);
-        } else {
-            analysisMono = ytmusicOperations.analyzeTrack(userId, track);
+        String failureReason = result == null ? "ANALYSIS_ERROR" : result.getFailureReason();
+        boolean invalidMatchedResult = result != null && result.isMatched();
+        if (invalidMatchedResult) {
+            failureReason = "MATCHED_RESULT_MISSING_DESTINATION_ID";
+        } else if (failureReason == null || failureReason.isBlank()) {
+            failureReason = "NO_MATCH_FOUND";
         }
 
-        return analysisMono
-                .map(result -> {
-                    String matchedTargetId = null;
-                    if (result != null && result.isMatched()) {
-                        matchedTargetId = result.getSpotifyTrackId() != null ? result.getSpotifyTrackId() : result.getYoutubeVideoId();
-                    }
+        boolean analysisFailed = invalidMatchedResult || "ANALYSIS_ERROR".equalsIgnoreCase(failureReason);
+        TransferItem item = TransferItem.builder()
+                .jobId(jobId)
+                .sourceTrackId(track.getTrackId())
+                .targetTrackId(null)
+                .status(analysisFailed ? ItemStatus.FAILED.name() : ItemStatus.SKIPPED.name())
+                .errorMessage(failureReason)
+                .confidenceScore(result == null ? 0 : result.getConfidence())
+                .retryCount(0)
+                .build();
+        itemRepository.save(item);
+        return false;
+    }
 
-                    if (matchedTargetId != null) {
-                        SongMapping newMapping = SongMapping.builder()
-                                .sourcePlatform(sourcePlatform)
-                                .sourceTrackId(track.getTrackId())
-                                .destinationPlatform(targetPlatform)
-                                .destinationTrackId(matchedTargetId)
-                                .title(track.getTitle())
-                                .artist(track.getArtists())
-                                .confidenceScore(result.getConfidence())
-                                .lastUsedAt(LocalDateTime.now())
-                                .build();
-                        songMappingRepository.save(newMapping);
+    private Mono<Boolean> persistFailedAnalysisItem(UUID jobId, SpotifyTrackDto track, String failureReason) {
+        TransferItem item = TransferItem.builder()
+                .jobId(jobId)
+                .sourceTrackId(track.getTrackId())
+                .targetTrackId(null)
+                .status(ItemStatus.FAILED.name())
+                .errorMessage(failureReason)
+                .confidenceScore(0)
+                .retryCount(0)
+                .build();
+        return Mono.fromCallable(() -> itemRepository.save(item))
+                .thenReturn(false);
+    }
 
-                        TransferItem item = TransferItem.builder()
-                                .jobId(jobId)
-                                .sourceTrackId(track.getTrackId())
-                                .targetTrackId(matchedTargetId)
-                                .matchedTrackUri(matchedTargetId)
-                                .status(ItemStatus.PENDING.name())
-                                .confidenceScore(result.getConfidence())
-                                .retryCount(0)
-                                .build();
-                        itemRepository.save(item);
-                        return true;
-                    } else {
-                        TransferItem item = TransferItem.builder()
-                                .jobId(jobId)
-                                .sourceTrackId(track.getTrackId())
-                                .targetTrackId(null)
-                                .status(ItemStatus.SKIPPED.name())
-                                .errorMessage("No match found on target platform")
-                                .confidenceScore(0)
-                                .retryCount(0)
-                                .build();
-                        itemRepository.save(item);
-                        return false;
-                    }
-                })
-                .onErrorReturn(false);
+    private String describeAnalysisError(Throwable error) {
+        if (error instanceof org.springframework.web.reactive.function.client.WebClientResponseException responseError) {
+            return "Provider returned HTTP " + responseError.getStatusCode().value()
+                    + " " + responseError.getStatusText();
+        }
+        String message = error.getMessage();
+        if (message == null || message.isBlank()) {
+            return "Analysis provider error: " + error.getClass().getSimpleName();
+        }
+        return ("Analysis provider error: " + message).substring(
+                0, Math.min(("Analysis provider error: " + message).length(), 500));
+    }
+
+    private record MappingLookup(Optional<SongMapping> mapping, boolean failed) {
+    }
+
+    private record AnalysisOutcome(TrackAnalysisResultDto result, String failureReason) {
+    }
+
+    private String getMatchedTargetId(TrackAnalysisResultDto result, String targetPlatform) {
+        String normalizedTarget = targetPlatform == null ? "" : targetPlatform.toUpperCase(Locale.ROOT);
+        if (normalizedTarget.contains("SPOTIFY")) {
+            return result.getSpotifyTrackId();
+        }
+        if (normalizedTarget.contains("YOUTUBE") || normalizedTarget.contains("YTMUSIC")) {
+            String videoId = result.getYoutubeVideoId();
+            if (isYoutubeVideoId(videoId)) {
+                return videoId;
+            }
+            log.warn("Matched YouTube result for source track did not contain a valid video ID: '{}'",
+                    result.getSpotifyTrackId());
+            return null;
+        }
+        log.warn("Cannot select a destination track ID for unsupported target platform '{}'", targetPlatform);
+        return null;
+    }
+
+    private boolean isUsableCachedTargetId(String destinationTrackId, String targetPlatform) {
+        String normalizedTarget = targetPlatform == null ? "" : targetPlatform.toUpperCase(Locale.ROOT);
+        if (normalizedTarget.contains("YOUTUBE") || normalizedTarget.contains("YTMUSIC")) {
+            return isYoutubeVideoId(destinationTrackId);
+        }
+        return destinationTrackId != null && !destinationTrackId.isBlank();
+    }
+
+    private boolean isYoutubeVideoId(String videoId) {
+        return videoId != null && videoId.matches("[A-Za-z0-9_-]{11}");
     }
 }

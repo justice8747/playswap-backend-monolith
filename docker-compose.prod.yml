@@ -1,37 +1,6 @@
 version: '3.8'
 
 services:
-  # -------------------------------------------------------
-  # PostgreSQL Database (Internal Only - Not Exposed to Host)
-  # -------------------------------------------------------
-  playswap-db:
-    image: postgres:16-alpine
-    container_name: playswap-db
-    restart: always
-    environment:
-      POSTGRES_DB: playswap
-      POSTGRES_USER: ${DB_AUTH_USERNAME:?DB_AUTH_USERNAME environment variable is required}
-      POSTGRES_PASSWORD: ${DB_AUTH_PASSWORD:?DB_AUTH_PASSWORD environment variable is required}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./init-scripts/01-init-db.sh:/docker-entrypoint-initdb.d/01-init-db.sh
-      - ./init-scripts/auth_service_data.sql:/docker-entrypoint-initdb.d/auth_service_data.sql
-      - ./init-scripts/transfer_service_data.sql:/docker-entrypoint-initdb.d/transfer_service_data.sql
-      - ./init-scripts/schema_indexes.sql:/docker-entrypoint-initdb.d/schema_indexes.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_AUTH_USERNAME:?DB_AUTH_USERNAME environment variable is required}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-
-  # -------------------------------------------------------
-  # PlaySwap Modular Monolith Application
-  # Consolidated from Eureka, Gateway, Auth, Spotify, YTMusic, Transfer
-  # -------------------------------------------------------
   playswap-app:
     build:
       context: .
@@ -40,25 +9,21 @@ services:
     restart: always
     ports:
       - "9000:9000"
+    env_file:
+      - .env
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://playswap-db:5432/playswap
-      SPRING_DATASOURCE_USERNAME: ${DB_AUTH_USERNAME:?DB_AUTH_USERNAME environment variable is required}
-      SPRING_DATASOURCE_PASSWORD: ${DB_AUTH_PASSWORD:?DB_AUTH_PASSWORD environment variable is required}
-      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:?SPOTIFY_CLIENT_ID environment variable is required}
-      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:?SPOTIFY_CLIENT_SECRET environment variable is required}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID environment variable is required}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET environment variable is required}
-      FRONTEND_URL: ${FRONTEND_URL:-https://playswap-frontend-4xqptpaxl-jus-tech.vercel.app}
-      AES_SECRET_KEY: ${AES_SECRET_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:-${AES_SECRET_KEY:-}}
+      SPRING_DATASOURCE_URL: ${DB_AUTH_URL}
+      SPRING_DATASOURCE_USERNAME: ${DB_AUTH_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${DB_AUTH_PASSWORD}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL}
+      AES_SECRET_KEY: ${AES_SECRET_KEY}
+      JWT_SECRET: ${JWT_SECRET}
       JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
-    depends_on:
-      playswap-db:
-        condition: service_healthy
     deploy:
       resources:
         limits:
-          memory: 768M
-
-volumes:
-  postgres_data:
+          memory: 850M

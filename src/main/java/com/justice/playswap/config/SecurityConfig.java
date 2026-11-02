@@ -101,7 +101,9 @@ public class SecurityConfig {
                 "http://127.0.0.1:*",
                 "https://*.vercel.app",
                 "https://playswap-frontend-4xqptpaxl-jus-tech.vercel.app",
-                "https://*.onrender.com"
+                "https://*.onrender.com",
+                "https://*.justec.com.ng",
+                "https://justec.com.ng"
         ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"));
         config.setAllowedHeaders(List.of("*"));

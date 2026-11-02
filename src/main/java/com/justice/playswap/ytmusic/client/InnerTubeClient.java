@@ -1,26 +1,44 @@
 package com.justice.playswap.ytmusic.client;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class InnerTubeClient {
 
-    private final WebClient.Builder webClientBuilder;
-
     private static final String INNERTUBE_URL = "https://music.youtube.com/youtubei/v1/search";
-
-    // InnerTube search params filters (decoded raw base64)
     private static final String PARAMS_SONGS = "egWKAQIYAWoKEAkQBRAKEAMQBw==";
     private static final String PARAMS_VIDEOS = "egWKAQIYAWoKEAkQChAFEAMQBw==";
+    private static final Set<String> SEARCH_CONTAINER_KEYS = Set.of(
+            "tabbedSearchResultsRenderer",
+            "twoColumnSearchResultsRenderer",
+            "sectionListRenderer",
+            "musicShelfRenderer",
+            "musicShelfContinuation",
+            "musicCardShelfRenderer",
+            "musicPlaylistShelfRenderer",
+            "itemSectionRenderer"
+    );
+    private static final Set<String> ITEM_RENDERER_KEYS = Set.of(
+            "musicTwoRowItemRenderer",
+            "musicResponsiveListItemRenderer",
+            "videoRenderer"
+    );
+
+    private final WebClient.Builder webClientBuilder;
 
     public Mono<List<Map<String, String>>> searchSongs(String query) {
         return performInnerTubeSearch(query, PARAMS_SONGS);
@@ -51,170 +69,213 @@ public class InnerTubeClient {
                 .header("Content-Type", "application/json")
                 .bodyValue(requestBody)
                 .retrieve()
-                .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                .bodyToMono(JsonNode.class)
                 .map(this::parseInnerTubeResponse)
-                .onErrorResume(e -> {
-                    log.warn("InnerTube search failed for query '{}': {}", query, e.getMessage());
-                    return Mono.just(List.of());
-                });
+                .doOnError(error -> log.warn("InnerTube search failed for query '{}'", query, error));
     }
 
-    @SuppressWarnings("unchecked")
-    private List<Map<String, String>> parseInnerTubeResponse(Map<String, Object> response) {
-        if (response == null) return List.of();
-        List<Map<String, String>> results = new ArrayList<>();
-
-        try {
-            Map<String, Object> contents = (Map<String, Object>) response.get("contents");
-            if (contents == null) return results;
-
-            Map<String, Object> tabbed = (Map<String, Object>) contents.get("tabbedSearchResultsRenderer");
-            if (tabbed == null) return results;
-
-            List<Map<String, Object>> tabs = (List<Map<String, Object>>) tabbed.get("tabs");
-            if (tabs == null || tabs.isEmpty()) return results;
-
-            Map<String, Object> tabRenderer = (Map<String, Object>) tabs.get(0).get("tabRenderer");
-            if (tabRenderer == null) return results;
-
-            Map<String, Object> content = (Map<String, Object>) tabRenderer.get("content");
-            if (content == null) return results;
-
-            Map<String, Object> sectionList = (Map<String, Object>) content.get("sectionListRenderer");
-            if (sectionList == null) return results;
-
-            List<Map<String, Object>> sectionContents = (List<Map<String, Object>>) sectionList.get("contents");
-            if (sectionContents == null || sectionContents.isEmpty()) return results;
-
-            for (Map<String, Object> section : sectionContents) {
-                Map<String, Object> shelf = (Map<String, Object>) section.get("musicShelfRenderer");
-                if (shelf != null && shelf.get("contents") != null) {
-                    List<Map<String, Object>> shelfItems = (List<Map<String, Object>>) shelf.get("contents");
-                    for (Map<String, Object> item : shelfItems) {
-                        Map<String, Object> itemRenderer = (Map<String, Object>) item.get("musicTwoRowItemRenderer");
-                        if (itemRenderer == null) {
-                            itemRenderer = (Map<String, Object>) item.get("musicResponsiveListItemRenderer");
-                        }
-                        if (itemRenderer != null) {
-                            Map<String, String> extracted = extractItemData(itemRenderer);
-                            if (extracted != null && extracted.containsKey("videoId")) {
-                                results.add(extracted);
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.debug("Error parsing InnerTube response: {}", e.getMessage());
+    private List<Map<String, String>> parseInnerTubeResponse(JsonNode response) {
+        if (response == null || !response.isObject()) {
+            throw new IllegalStateException("InnerTube returned an empty or invalid JSON response");
         }
 
-        return results;
+        ParseState state = new ParseState();
+        collectSearchResults(response, state);
+
+        if (!state.searchContainerFound) {
+            throw new IllegalStateException("InnerTube response did not contain a supported search-results structure");
+        }
+        if (state.results.isEmpty() && state.invalidItemCount > 0) {
+            throw new IllegalStateException("InnerTube response contained unrecognized or incomplete result items");
+        }
+        if (state.invalidItemCount > 0) {
+            log.warn("InnerTube response contained {} unrecognized result items; continuing with {} parsed candidates",
+                    state.invalidItemCount, state.results.size());
+        }
+
+        return state.results;
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, String> extractItemData(Map<String, Object> renderer) {
-        String videoId = null;
-        String title = null;
-        String artist = null;
+    private void collectSearchResults(JsonNode node, ParseState state) {
+        if (node.isObject()) {
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                String key = field.getKey();
+                JsonNode value = field.getValue();
 
-        // Extract Video ID
-        Map<String, Object> navEndpoint = (Map<String, Object>) renderer.get("navigationEndpoint");
-        if (navEndpoint != null) {
-            Map<String, Object> watchEndpoint = (Map<String, Object>) navEndpoint.get("watchEndpoint");
-            if (watchEndpoint != null) {
-                videoId = (String) watchEndpoint.get("videoId");
-            }
-        }
-
-        // Extract Title
-        Map<String, Object> titleMap = (Map<String, Object>) renderer.get("title");
-        if (titleMap != null && titleMap.get("runs") instanceof List<?> runs && !runs.isEmpty()) {
-            Map<String, Object> firstRun = (Map<String, Object>) runs.get(0);
-            title = (String) firstRun.get("text");
-        }
-
-        // Extract Subtitle / Artist
-        Map<String, Object> subtitleMap = (Map<String, Object>) renderer.get("subtitle");
-        if (subtitleMap != null && subtitleMap.get("runs") instanceof List<?> runs && !runs.isEmpty()) {
-            StringBuilder sb = new StringBuilder();
-            for (Object obj : runs) {
-                Map<String, Object> run = (Map<String, Object>) obj;
-                String text = (String) run.get("text");
-                if (text != null && !text.isBlank() && !text.equals(" • ")) {
-                    if (!sb.isEmpty()) sb.append(", ");
-                    sb.append(text);
+                if (SEARCH_CONTAINER_KEYS.contains(key)) {
+                    state.searchContainerFound = true;
                 }
-            }
-            artist = sb.toString();
-        }
-
-        // flexColumns (InnerTube musicResponsiveListItemRenderer)
-        if (renderer.get("flexColumns") instanceof List<?> flexColumns && !flexColumns.isEmpty()) {
-            Map<String, Object> col0 = (Map<String, Object>) flexColumns.get(0);
-            if (col0 != null) {
-                Map<String, Object> colRenderer = (Map<String, Object>) col0.get("musicResponsiveListItemFlexColumnRenderer");
-                if (colRenderer != null && colRenderer.get("text") instanceof Map<?,?> textMap) {
-                    if (textMap.get("runs") instanceof List<?> runs && !runs.isEmpty()) {
-                        Map<String, Object> run0 = (Map<String, Object>) runs.get(0);
-                        if (title == null) {
-                            title = (String) run0.get("text");
-                        }
-                        if (videoId == null && run0.get("navigationEndpoint") instanceof Map<?,?> nav) {
-                            Map<String, Object> watch = (Map<String, Object>) nav.get("watchEndpoint");
-                            if (watch != null) {
-                                videoId = (String) watch.get("videoId");
-                            }
-                        }
+                if (ITEM_RENDERER_KEYS.contains(key)) {
+                    Map<String, String> item = extractItemData(key, value);
+                    if (item == null) {
+                        state.invalidItemCount++;
+                    } else {
+                        state.results.add(item);
                     }
                 }
+                collectSearchResults(value, state);
             }
-
-            if (flexColumns.size() > 1) {
-                Map<String, Object> col1 = (Map<String, Object>) flexColumns.get(1);
-                if (col1 != null) {
-                    Map<String, Object> colRenderer = (Map<String, Object>) col1.get("musicResponsiveListItemFlexColumnRenderer");
-                    if (colRenderer != null && colRenderer.get("text") instanceof Map<?,?> textMap) {
-                        if (textMap.get("runs") instanceof List<?> runs && !runs.isEmpty()) {
-                            StringBuilder sb = new StringBuilder();
-                            for (Object obj : runs) {
-                                Map<String, Object> run = (Map<String, Object>) obj;
-                                String text = (String) run.get("text");
-                                if (text != null && !text.isBlank() && !text.equals(" • ")) {
-                                    if (!sb.isEmpty()) sb.append(", ");
-                                    sb.append(text);
-                                }
-                            }
-                            if (artist == null || artist.isEmpty()) {
-                                artist = sb.toString();
-                            }
-                        }
-                    }
-                }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                collectSearchResults(child, state);
             }
         }
+    }
 
-        // Overlay fallback for videoId
-        if (videoId == null && renderer.get("overlay") instanceof Map<?,?> overlay) {
-            if (overlay.get("musicItemRendererOverlayRenderer") instanceof Map<?,?> itemOverlay) {
-                if (itemOverlay.get("content") instanceof Map<?,?> content) {
-                    if (content.get("musicPlayButtonRenderer") instanceof Map<?,?> playBtn) {
-                        if (playBtn.get("playNavigationEndpoint") instanceof Map<?,?> playNav) {
-                            if (playNav.get("watchEndpoint") instanceof Map<?,?> watch) {
-                                videoId = (String) watch.get("videoId");
-                            }
-                        }
-                    }
-                }
-            }
+    private Map<String, String> extractItemData(String rendererType, JsonNode renderer) {
+        String videoId = firstVideoId(
+                renderer.path("videoId"),
+                renderer.path("playlistItemData").path("videoId"),
+                renderer.path("navigationEndpoint").path("watchEndpoint").path("videoId"),
+                renderer.path("overlay")
+                        .path("musicItemRendererOverlayRenderer")
+                        .path("content")
+                        .path("musicPlayButtonRenderer")
+                        .path("playNavigationEndpoint")
+                        .path("watchEndpoint")
+                        .path("videoId"));
+        JsonNode flexColumns = renderer.path("flexColumns");
+        if (videoId == null && flexColumns.isArray()) {
+            videoId = findVideoId(flexColumns);
         }
 
-        if (videoId != null && title != null) {
-            return Map.of(
-                    "videoId", videoId,
-                    "title", title,
-                    "channel", artist != null ? artist : ""
-            );
+        String title = text(renderer.path("title"));
+        if (title == null && flexColumns.isArray() && !flexColumns.isEmpty()) {
+            title = text(flexColumns.get(0)
+                    .path("musicResponsiveListItemFlexColumnRenderer").path("text"));
+        }
+        if (title == null) {
+            title = text(renderer.path("accessibilityData").path("accessibilityData").path("label"));
+        }
+
+        String artist = text(renderer.path("subtitle"));
+        if (artist == null) {
+            artist = firstText(renderer, "ownerText", "longBylineText", "shortBylineText");
+        }
+        if (artist == null && flexColumns.isArray() && flexColumns.size() > 1) {
+            artist = textBeforeSeparator(flexColumns.get(1)
+                    .path("musicResponsiveListItemFlexColumnRenderer").path("text"));
+        }
+
+        if (videoId == null || title == null) {
+            log.debug("Could not extract a playable video ID and title from InnerTube renderer '{}'; fields: {}",
+                    rendererType, fieldNames(renderer));
+            return null;
+        }
+
+        Map<String, String> result = new LinkedHashMap<>();
+        result.put("videoId", videoId);
+        result.put("title", title);
+        result.put("channel", artist == null ? "" : artist);
+        return result;
+    }
+
+    private String firstVideoId(JsonNode... candidates) {
+        for (JsonNode candidate : candidates) {
+            String value = text(candidate);
+            if (value != null && value.matches("[A-Za-z0-9_-]{11}")) {
+                return value;
+            }
         }
         return null;
+    }
+
+    private String findVideoId(JsonNode node) {
+        if (node.isObject()) {
+            JsonNode videoId = node.get("videoId");
+            String value = text(videoId);
+            if (value != null && value.matches("[A-Za-z0-9_-]{11}")) {
+                return value;
+            }
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                String nestedVideoId = findVideoId(fields.next().getValue());
+                if (nestedVideoId != null) {
+                    return nestedVideoId;
+                }
+            }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                String nestedVideoId = findVideoId(child);
+                if (nestedVideoId != null) {
+                    return nestedVideoId;
+                }
+            }
+        }
+        return null;
+    }
+
+    private List<String> fieldNames(JsonNode node) {
+        List<String> names = new ArrayList<>();
+        if (node.isObject()) {
+            node.fieldNames().forEachRemaining(names::add);
+        }
+        return names;
+    }
+
+    private String firstText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = text(node.path(field));
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String textBeforeSeparator(JsonNode node) {
+        JsonNode runs = node.path("runs");
+        if (!runs.isArray()) {
+            return text(node);
+        }
+
+        List<String> parts = new ArrayList<>();
+        for (JsonNode run : runs) {
+            String part = text(run.path("text"));
+            if (part == null) {
+                continue;
+            }
+            if (part.equals("•") || part.equals("|")) {
+                break;
+            }
+            parts.add(part);
+        }
+        return parts.isEmpty() ? null : String.join(" ", parts);
+    }
+
+    private String text(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        if (node.isTextual()) {
+            String value = node.asText().trim();
+            return value.isEmpty() ? null : value;
+        }
+        if (node.isObject()) {
+            JsonNode simpleText = node.get("simpleText");
+            if (simpleText != null && simpleText.isTextual()) {
+                return text(simpleText);
+            }
+            JsonNode runs = node.get("runs");
+            if (runs != null && runs.isArray()) {
+                List<String> parts = new ArrayList<>();
+                for (JsonNode run : runs) {
+                    String part = text(run.path("text"));
+                    if (part != null && !part.equals("•")) {
+                        parts.add(part);
+                    }
+                }
+                return parts.isEmpty() ? null : String.join(", ", parts);
+            }
+        }
+        return null;
+    }
+
+    private static final class ParseState {
+        private final List<Map<String, String>> results = new ArrayList<>();
+        private boolean searchContainerFound;
+        private int invalidItemCount;
     }
 }

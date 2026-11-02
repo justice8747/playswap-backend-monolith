@@ -47,9 +47,12 @@ public class TransferController {
             return Mono.error(new ResponseStatusException(HttpStatus.BAD_REQUEST, "Request body must contain non-empty 'playlistIds' list."));
         }
         if (request.getSourcePlatform() == null || request.getSourcePlatform().isBlank()) {
+            System.out.println(request.getSourcePlatform());
             request.setSourcePlatform("SPOTIFY");
         }
         if (request.getTargetPlatform() == null || request.getTargetPlatform().isBlank()) {
+            System.out.println(request.getTargetPlatform());
+
             request.setTargetPlatform("YTMUSIC");
         }
         log.info("Received analyze request from user {} for {} playlists (Source: {}, Target: {})",

@@ -1,51 +1,29 @@
 version: '3.8'
 
 services:
-  playswap-db:
-    image: postgres:16-alpine
-    container_name: playswap-db
-    restart: unless-stopped
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_DB: playswap
-      POSTGRES_USER: ${DB_AUTH_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${DB_AUTH_PASSWORD:-postgres}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./init-scripts/01-init-db.sh:/docker-entrypoint-initdb.d/01-init-db.sh
-      - ./init-scripts/auth_service_data.sql:/docker-entrypoint-initdb.d/auth_service_data.sql
-      - ./init-scripts/transfer_service_data.sql:/docker-entrypoint-initdb.d/transfer_service_data.sql
-      - ./init-scripts/schema_indexes.sql:/docker-entrypoint-initdb.d/schema_indexes.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_AUTH_USERNAME:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   playswap-app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: playswap-backend
-    restart: unless-stopped
+    restart: always
     ports:
       - "9000:9000"
+    env_file:
+      - .env
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://playswap-db:5432/playswap
-      SPRING_DATASOURCE_USERNAME: ${DB_AUTH_USERNAME:-postgres}
-      SPRING_DATASOURCE_PASSWORD: ${DB_AUTH_PASSWORD:-postgres}
-      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-dummy_spotify_client_id}
-      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-dummy_spotify_client_secret}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-dummy_google_client_id}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-dummy_google_client_secret}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      AES_SECRET_KEY: ${AES_SECRET_KEY:-}
-      JWT_SECRET: ${JWT_SECRET:-${AES_SECRET_KEY:-}}
-      JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC"
-    depends_on:
-      playswap-db:
-        condition: service_healthy
-
-volumes:
-  postgres_data:
+      SPRING_DATASOURCE_URL: ${DB_AUTH_URL}
+      SPRING_DATASOURCE_USERNAME: ${DB_AUTH_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${DB_AUTH_PASSWORD}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL}
+      AES_SECRET_KEY: ${AES_SECRET_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -XX:+ExitOnOutOfMemoryError"
+    deploy:
+      resources:
+        limits:
+          memory: 850M

@@ -27,6 +27,7 @@ public class UserService {
     private final UserRepository userRepo;
     private final AccessTokenRepository accessTokerepo;
     private final PlatformTransactionManager transactionManager;
+    private final AccessTokenCache accessTokenCache;
 
     // ==========================================
     // DOOR A — Login or Register
@@ -51,7 +52,8 @@ public class UserService {
                     throw new RuntimeException("Unsupported platform: " + platform);
                 }
             });
-        }).subscribeOn(Schedulers.boundedElastic());
+        }).subscribeOn(Schedulers.boundedElastic())
+                .doOnNext(user -> accessTokenCache.invalidate(user.getId(), platform));
     }
 
     // ==========================================
@@ -113,7 +115,8 @@ public class UserService {
                             saveTokens(savedUser.getId(), platform, accessToken, refreshToken, expiresAt);
                             return savedUser;
                         });
-                    }).subscribeOn(Schedulers.boundedElastic());
+                    }).subscribeOn(Schedulers.boundedElastic())
+                            .doOnNext(user -> accessTokenCache.invalidate(user.getId(), platform));
                 });
     }
 

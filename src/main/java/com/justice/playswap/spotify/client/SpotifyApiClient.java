@@ -5,12 +5,14 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -105,39 +107,76 @@ public class SpotifyApiClient {
     }
 
     public Mono<Boolean> addTracksToPlaylist(String playlistId, List<String> trackIds, String accessToken) {
-        if (trackIds == null || trackIds.isEmpty()) {
-            return Mono.just(true);
-        }
-
-        List<String> uris = trackIds.stream()
+        List<String> validIds = trackIds == null ? List.of() : trackIds.stream()
                 .filter(id -> id != null && !id.isBlank())
-                .map(id -> id.startsWith("spotify:track:") ? id : "spotify:track:" + id)
                 .collect(Collectors.toList());
 
-        if (uris.isEmpty()) {
-            return Mono.just(true);
+        return addTracksToPlaylistWithResults(playlistId, validIds, accessToken)
+                .map(insertedIds -> insertedIds.size() == validIds.stream().distinct().count());
+    }
+
+    public Mono<Set<String>> addTracksToPlaylistWithResults(
+            String playlistId, List<String> trackIds, String accessToken) {
+        if (trackIds == null || trackIds.isEmpty()) {
+            return Mono.just(Set.of());
+        }
+
+        List<String> validIds = trackIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .collect(Collectors.toList());
+        if (validIds.isEmpty()) {
+            return Mono.just(Set.of());
         }
 
         List<List<String>> batches = new ArrayList<>();
-        for (int i = 0; i < uris.size(); i += 100) {
-            batches.add(uris.subList(i, Math.min(i + 100, uris.size())));
+        for (int i = 0; i < validIds.size(); i += 100) {
+            batches.add(validIds.subList(i, Math.min(i + 100, validIds.size())));
         }
 
         return reactor.core.publisher.Flux.fromIterable(batches)
-                .concatMap(batchUris -> webClientBuilder.build()
-                        .post()
-                        .uri(SPOTIFY_API_BASE + "/playlists/" + playlistId + "/tracks")
-                        .header("Authorization", "Bearer " + accessToken)
-                        .header("Content-Type", "application/json")
-                        .bodyValue(Map.of("uris", batchUris))
-                        .retrieve()
-                        .bodyToMono(Map.class)
-                        .retryWhen(com.justice.playswap.spotify.util.SpotifyRetryUtil.rateLimitRetrySpec())
-                        .doOnNext(res -> log.info("Successfully added {} tracks to Spotify playlist {}", batchUris.size(), playlistId))
-                )
-                .then(Mono.just(true))
-                .doOnError(e -> log.error("Failed to add tracks to Spotify playlist {}: {}", playlistId, e.getMessage()))
-                .onErrorReturn(false);
+                .concatMap(batchIds -> {
+                    List<String> uris = batchIds.stream()
+                            .map(id -> id.startsWith("spotify:track:") ? id : "spotify:track:" + id)
+                            .collect(Collectors.toList());
+                    return webClientBuilder.build()
+                            .post()
+                            .uri(SPOTIFY_API_BASE + "/playlists/" + playlistId + "/items")
+                            .header("Authorization", "Bearer " + accessToken)
+                            .header("Content-Type", "application/json")
+                            .bodyValue(Map.of("uris", uris))
+                            .retrieve()
+                            .bodyToMono(Map.class)
+                            .retryWhen(com.justice.playswap.spotify.util.SpotifyRetryUtil.rateLimitRetrySpec())
+                            .doOnNext(res -> log.info("Successfully added {} tracks to Spotify playlist {}", batchIds.size(), playlistId))
+                            .thenReturn(batchIds)
+                            .onErrorResume(error -> {
+                                if (isUnauthorized(error)) {
+                                    return Mono.error(error);
+                                }
+                                log.warn("Failed to add a batch of {} tracks to Spotify playlist {}: {}",
+                                        batchIds.size(), playlistId, error.getMessage());
+                                return Mono.just(List.<String>of());
+                            });
+                })
+                .flatMapIterable(ids -> ids)
+                .collect(Collectors.toSet())
+                .doOnError(e -> log.error("Failed to add tracks to Spotify playlist {}: {}", playlistId, e.getMessage()));
+    }
+
+    public Mono<Boolean> deletePlaylist(String playlistId, String accessToken) {
+        return webClientBuilder.build()
+                .delete()
+                .uri(SPOTIFY_API_BASE + "/playlists/" + playlistId + "/followers")
+                .header("Authorization", "Bearer " + accessToken)
+                .retrieve()
+                .toBodilessEntity()
+                .thenReturn(true)
+                .doOnError(error -> log.error("Failed to remove Spotify playlist {}: {}", playlistId, error.getMessage()));
+    }
+
+    private boolean isUnauthorized(Throwable error) {
+        return error instanceof WebClientResponseException webClientError
+                && webClientError.getStatusCode().value() == 401;
     }
 
     private Mono<String> getCurrentSpotifyUserId(String accessToken) {
@@ -250,14 +289,23 @@ public class SpotifyApiClient {
                     return fetchPlaylistDirect(playlistId, accessToken);
                 })
                 .onErrorResume(e -> {
+                    if (isUnauthorized(e)) {
+                        return Mono.error(e);
+                    }
                     log.warn("Primary /items fetch failed for playlist {} ({}), attempting fallback without market param...", playlistId, e.getMessage());
                     String fallbackItemsUrl = SPOTIFY_API_BASE + "/playlists/" + playlistId + "/items?limit=100";
                     return fetchTracksRecursive(fallbackItemsUrl, accessToken)
                             .onErrorResume(ex -> {
+                                if (isUnauthorized(ex)) {
+                                    return Mono.error(ex);
+                                }
                                 log.warn("Fallback /items endpoint failed for playlist {}, trying /tracks endpoint...", playlistId);
                                 String tracksUrl = SPOTIFY_API_BASE + "/playlists/" + playlistId + "/tracks?limit=100";
                                 return fetchTracksRecursive(tracksUrl, accessToken)
                                         .onErrorResume(ex2 -> {
+                                            if (isUnauthorized(ex2)) {
+                                                return Mono.error(ex2);
+                                            }
                                             log.warn("Fallback /tracks endpoint failed for playlist {}, trying direct playlist endpoint...", playlistId);
                                             return fetchPlaylistDirect(playlistId, accessToken);
                                         });
@@ -300,7 +348,12 @@ public class SpotifyApiClient {
                         log.error("❌ Direct playlist fallback failed for playlist {}: {}", playlistId, e.getMessage());
                     }
                 })
-                .onErrorReturn(List.of());
+                .onErrorResume(error -> {
+                    if (isUnauthorized(error)) {
+                        return Mono.error(error);
+                    }
+                    return Mono.just(List.of());
+                });
     }
 
     private Mono<List<com.justice.playswap.spotify.model.SpotifyTrack>> fetchTracksRecursive(String url, String accessToken) {

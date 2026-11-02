@@ -5,10 +5,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -115,16 +117,25 @@ public class YoutubeApiClient {
     }
 
     public Mono<Boolean> addTracksToPlaylist(String playlistId, List<String> videoIds, String accessToken) {
+        List<String> validIds = videoIds == null ? List.of() : videoIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .collect(Collectors.toList());
+
+        return addTracksToPlaylistWithResults(playlistId, validIds, accessToken)
+                .map(insertedIds -> insertedIds.size() == validIds.stream().distinct().count());
+    }
+
+    public Mono<Set<String>> addTracksToPlaylistWithResults(
+            String playlistId, List<String> videoIds, String accessToken) {
         if (videoIds == null || videoIds.isEmpty()) {
-            return Mono.just(true);
+            return Mono.just(Set.of());
         }
 
         List<String> validIds = videoIds.stream()
                 .filter(id -> id != null && !id.isBlank())
                 .collect(Collectors.toList());
-
         if (validIds.isEmpty()) {
-            return Mono.just(true);
+            return Mono.just(Set.of());
         }
 
         int estimatedQuotaCost = validIds.size() * 50;
@@ -156,14 +167,33 @@ public class YoutubeApiClient {
                             .retrieve()
                             .bodyToMono(Map.class)
                             .doOnNext(res -> log.debug("Added video {} to YouTube playlist {}", videoId, playlistId))
+                            .thenReturn(videoId)
                             .onErrorResume(e -> {
+                                if (isUnauthorized(e)) {
+                                    return Mono.error(e);
+                                }
                                 log.warn("Failed to add video {} to YouTube playlist {}: {}", videoId, playlistId, e.getMessage());
                                 return Mono.empty();
                             });
                 })
-                .then(Mono.just(true))
-                .doOnError(e -> log.error("Failed to insert tracks into YouTube playlist {}: {}", playlistId, e.getMessage()))
-                .onErrorReturn(false);
+                .collect(Collectors.toSet())
+                .doOnError(e -> log.error("Failed to insert tracks into YouTube playlist {}: {}", playlistId, e.getMessage()));
+    }
+
+    public Mono<Boolean> deletePlaylist(String playlistId, String accessToken) {
+        return webClientBuilder.build()
+                .delete()
+                .uri(YOUTUBE_API_BASE + "/playlists?id=" + playlistId)
+                .header("Authorization", "Bearer " + accessToken)
+                .retrieve()
+                .toBodilessEntity()
+                .thenReturn(true)
+                .doOnError(error -> log.error("Failed to delete YouTube playlist {}: {}", playlistId, error.getMessage()));
+    }
+
+    private boolean isUnauthorized(Throwable error) {
+        return error instanceof WebClientResponseException webClientError
+                && webClientError.getStatusCode().value() == 401;
     }
 
     public Mono<List<com.justice.playswap.ytmusic.model.YoutubeTrack>> getPlaylistTracks(String playlistId, String accessToken) {
