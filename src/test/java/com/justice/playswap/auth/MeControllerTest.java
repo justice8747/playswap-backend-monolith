@@ -3,6 +3,7 @@ package com.justice.playswap.auth;
 import com.justice.playswap.auth.controller.MeController;
 import com.justice.playswap.auth.entity.User;
 import com.justice.playswap.auth.repository.UserRepository;
+import com.justice.playswap.auth.service.UserService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -25,6 +26,9 @@ class MeControllerTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private UserService userService;
 
     @Mock
     private Jwt jwt;
@@ -111,5 +115,54 @@ class MeControllerTest {
         assertEquals(true, body.get("connected"));
         assertEquals("yt-channel-999", body.get("youtubeId"));
         assertEquals("yt@example.com", body.get("email"));
+    }
+
+    @Test
+    void testDisconnectSpotify_Success() {
+        when(jwt.getClaimAsString("preferred_username")).thenReturn(userId.toString());
+        when(userService.disconnectPlatform(userId, "spotify")).thenReturn(Mono.empty());
+
+        Mono<ResponseEntity<Map<String, Object>>> responseMono = meController.disconnectSpotify(jwt);
+        ResponseEntity<Map<String, Object>> response = responseMono.block();
+
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value());
+        Map<String, Object> body = response.getBody();
+        assertNotNull(body);
+        assertEquals(true, body.get("success"));
+        assertEquals("spotify", body.get("platform"));
+    }
+
+    @Test
+    void testDisconnectSpotify_FailureOnlyPlatform() {
+        when(jwt.getClaimAsString("preferred_username")).thenReturn(userId.toString());
+        when(userService.disconnectPlatform(userId, "spotify"))
+                .thenReturn(Mono.error(new IllegalStateException("Cannot disconnect your only connected platform.")));
+
+        Mono<ResponseEntity<Map<String, Object>>> responseMono = meController.disconnectSpotify(jwt);
+        ResponseEntity<Map<String, Object>> response = responseMono.block();
+
+        assertNotNull(response);
+        assertEquals(400, response.getStatusCode().value());
+        Map<String, Object> body = response.getBody();
+        assertNotNull(body);
+        assertEquals(false, body.get("success"));
+        assertTrue(body.get("message").toString().contains("only connected platform"));
+    }
+
+    @Test
+    void testDisconnectYoutube_Success() {
+        when(jwt.getClaimAsString("preferred_username")).thenReturn(userId.toString());
+        when(userService.disconnectPlatform(userId, "youtube")).thenReturn(Mono.empty());
+
+        Mono<ResponseEntity<Map<String, Object>>> responseMono = meController.disconnectYoutube(jwt);
+        ResponseEntity<Map<String, Object>> response = responseMono.block();
+
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value());
+        Map<String, Object> body = response.getBody();
+        assertNotNull(body);
+        assertEquals(true, body.get("success"));
+        assertEquals("youtube", body.get("platform"));
     }
 }

@@ -1,10 +1,9 @@
 package com.justice.playswap.config;
 
 import com.justice.playswap.auth.security.OAuth2AuthenticationSuccessHandler;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.justice.playswap.auth.service.JwtRevocationService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpCookie;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.config.Customizer;
@@ -29,20 +28,18 @@ import reactor.core.publisher.Mono;
 import com.justice.playswap.auth.service.JwtService;
 import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtException;
 import java.util.List;
 
 @Configuration
 @EnableWebFluxSecurity
 public class SecurityConfig {
 
-    @Lazy
-    @Autowired
-    private OAuth2AuthenticationSuccessHandler successHandler;
-
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(
             ServerHttpSecurity http,
-            ReactiveClientRegistrationRepository clientRegistrationRepository) {
+            ReactiveClientRegistrationRepository clientRegistrationRepository,
+            OAuth2AuthenticationSuccessHandler successHandler) {
         http
                 .cors(Customizer.withDefaults())
                 .authorizeExchange(exchanges -> exchanges
@@ -120,8 +117,15 @@ public class SecurityConfig {
     }
 
     @Bean
-    public ReactiveJwtDecoder reactiveJwtDecoder(JwtService jwtService) {
-        return NimbusReactiveJwtDecoder.withSecretKey(jwtService.getHmacKey()).build();
+    public ReactiveJwtDecoder reactiveJwtDecoder(
+            JwtService jwtService,
+            JwtRevocationService jwtRevocationService) {
+        ReactiveJwtDecoder delegate = NimbusReactiveJwtDecoder.withSecretKey(jwtService.getHmacKey()).build();
+        return token -> delegate.decode(token)
+                .flatMap(jwt -> jwtRevocationService.isRevoked(jwt.getTokenValue())
+                        .flatMap(revoked -> revoked
+                                ? Mono.error(new JwtException("JWT has been revoked"))
+                                : Mono.just(jwt)));
     }
 
     @Bean

@@ -96,7 +96,7 @@ public class SpotifyController {
         }
 
         log.info("==> [SpotifyController] Creating Spotify playlist '{}' for user '{}'", request.getName(), userId);
-        return tokenProvider.withValidAccessToken(userId, "spotify",
+        return tokenProvider.withValidAccessTokenWithoutRetry(userId, "spotify",
                 accessToken -> spotifyApiClient.createPlaylist(request.getName(), request.getDescription(), accessToken));
     }
 
@@ -114,7 +114,7 @@ public class SpotifyController {
 
         log.info("==> [SpotifyController] Adding {} tracks to Spotify playlist '{}' for user '{}'",
                 request.getTrackIds() != null ? request.getTrackIds().size() : 0, playlistId, userId);
-        return tokenProvider.withValidAccessToken(userId, "spotify",
+        return tokenProvider.withValidAccessTokenWithoutRetry(userId, "spotify",
                 accessToken -> spotifyApiClient.addTracksToPlaylist(playlistId, request.getTrackIds(), accessToken));
     }
 

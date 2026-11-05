@@ -164,14 +164,9 @@ public class SpotifyApiClient {
     }
 
     public Mono<Boolean> deletePlaylist(String playlistId, String accessToken) {
-        return webClientBuilder.build()
-                .delete()
-                .uri(SPOTIFY_API_BASE + "/playlists/" + playlistId + "/followers")
-                .header("Authorization", "Bearer " + accessToken)
-                .retrieve()
-                .toBodilessEntity()
-                .thenReturn(true)
-                .doOnError(error -> log.error("Failed to remove Spotify playlist {}: {}", playlistId, error.getMessage()));
+        log.warn("Spotify does not support deleting playlist {} through its API; retaining the playlist",
+                playlistId);
+        return Mono.just(false);
     }
 
     private boolean isUnauthorized(Throwable error) {

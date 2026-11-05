@@ -51,7 +51,6 @@ public class TransferController {
             request.setSourcePlatform("SPOTIFY");
         }
         if (request.getTargetPlatform() == null || request.getTargetPlatform().isBlank()) {
-            System.out.println(request.getTargetPlatform());
 
             request.setTargetPlatform("YTMUSIC");
         }

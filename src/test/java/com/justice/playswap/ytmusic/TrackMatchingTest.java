@@ -12,6 +12,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -158,6 +159,29 @@ class TrackMatchingTest {
 
         verify(innerTubeClient, times(2)).searchSongs(anyString());
         verify(innerTubeClient, times(2)).searchVideos(anyString());
+    }
+
+    @Test
+    void propagatesOfficialApiForbiddenResponse() {
+        TrackAnalysisRequest request = TrackAnalysisRequest.builder()
+                .spotifyTrackId("sp-track-forbidden")
+                .title("Forbidden Search Track")
+                .artist("Search Artist")
+                .primaryArtist("Search Artist")
+                .build();
+        WebClient.Builder webClientBuilder = WebClient.builder()
+                .exchangeFunction(requestMessage -> Mono.just(
+                        ClientResponse.create(HttpStatus.FORBIDDEN)
+                                .body("{\"error\":\"insufficientPermissions\"}")
+                                .build()));
+        TrackMatchingService service = new TrackMatchingService(innerTubeClient, webClientBuilder);
+
+        when(innerTubeClient.searchSongs(anyString())).thenReturn(Mono.just(List.of()));
+        when(innerTubeClient.searchVideos(anyString())).thenReturn(Mono.just(List.of()));
+
+        StepVerifier.create(service.analyzeTrack(request, "youtube-token"))
+                .expectError(WebClientResponseException.class)
+                .verify();
     }
 
     @Test

@@ -67,57 +67,117 @@ public class UserService {
             String refreshToken,
             Instant expiresAt) {
 
-        return Mono.fromCallable(() -> userRepo.findById(userId))
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(optionalUser -> {
-                    if (optionalUser.isEmpty()) {
-                        return Mono.empty();
+        return Mono.fromCallable(() -> {
+            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+            return Optional.ofNullable(transactionTemplate.execute(status -> {
+                Optional<User> optionalUser = userRepo.findById(userId);
+                if (optionalUser.isEmpty()) {
+                    return null;
+                }
+                User user = optionalUser.get();
+
+                if (platform.equals("spotify")) {
+                    String spotifyId = oAuth2User.getAttribute("id");
+                    String email = oAuth2User.getAttribute("email");
+
+                    // Check conflict — Spotify ID already linked to another user
+                    Optional<User> conflict = userRepo.findBySpotifyId(spotifyId);
+                    if (conflict.isPresent() && !conflict.get().getId().equals(userId)) {
+                        throw new RuntimeException("This Spotify account is already linked to another user");
                     }
-                    return Mono.fromCallable(() -> {
-                        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
-                        return transactionTemplate.execute(status -> {
-                            User user = userRepo.findById(userId).orElseThrow();
 
-                            if (platform.equals("spotify")) {
-                                String spotifyId = oAuth2User.getAttribute("id");
-                                String email = oAuth2User.getAttribute("email");
+                    user.setSpotifyId(spotifyId);
+                    user.setSpotifyEmail(email);
+                    if (user.getEmail() == null && email != null) {
+                        user.setEmail(email);
+                    }
 
-                                // Check conflict — Spotify ID already linked to another user
-                                Optional<User> conflict = userRepo.findBySpotifyId(spotifyId);
-                                if (conflict.isPresent() && !conflict.get().getId().equals(userId)) {
-                                    throw new RuntimeException("This Spotify account is already linked to another user");
-                                }
+                } else if (platform.equals("youtube")) {
+                    String youtubeId = oAuth2User.getAttribute("sub");
+                    String email = oAuth2User.getAttribute("email");
 
-                                user.setSpotifyId(spotifyId);
-                                user.setSpotifyEmail(email);
-                                if (user.getEmail() == null && email != null) {
-                                    user.setEmail(email);
-                                }
+                    // Check conflict — YouTube ID already linked to another user
+                    Optional<User> conflict = userRepo.findByYoutubeId(youtubeId);
+                    if (conflict.isPresent() && !conflict.get().getId().equals(userId)) {
+                        throw new RuntimeException("This YouTube account is already linked to another user");
+                    }
 
-                            } else if (platform.equals("youtube")) {
-                                String youtubeId = oAuth2User.getAttribute("sub");
-                                String email = oAuth2User.getAttribute("email");
+                    user.setYoutubeId(youtubeId);
+                    user.setYoutubeEmail(email);
+                    if (user.getEmail() == null && email != null) {
+                        user.setEmail(email);
+                    }
+                } else {
+                    throw new RuntimeException("Unsupported platform: " + platform);
+                }
 
-                                // Check conflict — YouTube ID already linked to another user
-                                Optional<User> conflict = userRepo.findByYoutubeId(youtubeId);
-                                if (conflict.isPresent() && !conflict.get().getId().equals(userId)) {
-                                    throw new RuntimeException("This YouTube account is already linked to another user");
-                                }
+                User savedUser = userRepo.save(user);
+                saveTokens(savedUser.getId(), platform, accessToken, refreshToken, expiresAt);
+                return savedUser;
+            }));
+        })
+        .subscribeOn(Schedulers.boundedElastic())
+        .flatMap(Mono::justOrEmpty)
+        .doOnNext(user -> accessTokenCache.invalidate(user.getId(), platform));
+    }
 
-                                user.setYoutubeId(youtubeId);
-                                user.setYoutubeEmail(email);
-                                if (user.getEmail() == null && email != null) {
-                                    user.setEmail(email);
-                                }
-                            }
+    // ==========================================
+    // DOOR C — Disconnect Platform
+    // ==========================================
+    public Mono<Void> disconnectPlatform(UUID userId, String platform) {
+        return Mono.fromCallable(() -> {
+            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+            return transactionTemplate.execute(status -> {
+                User user = userRepo.findById(userId)
+                        .orElseThrow(() -> new IllegalArgumentException("User not found: " + userId));
 
-                            User savedUser = userRepo.save(user);
-                            saveTokens(savedUser.getId(), platform, accessToken, refreshToken, expiresAt);
-                            return savedUser;
-                        });
-                    }).subscribeOn(Schedulers.boundedElastic())
-                            .doOnNext(user -> accessTokenCache.invalidate(user.getId(), platform));
-                });
+                String normalizedPlatform = platform.toLowerCase();
+                boolean isSpotify = normalizedPlatform.contains("spotify");
+                boolean isYoutube = normalizedPlatform.contains("youtube") || normalizedPlatform.contains("google") || normalizedPlatform.contains("ytmusic");
+
+                if (!isSpotify && !isYoutube) {
+                    throw new IllegalArgumentException("Unsupported platform for disconnect: " + platform);
+                }
+
+                if (isSpotify) {
+                    if (user.getSpotifyId() == null) {
+                        throw new IllegalStateException("Spotify account is not connected");
+                    }
+                    if (user.getYoutubeId() == null) {
+                        throw new IllegalStateException("Cannot disconnect your only connected platform. Connect another platform before disconnecting.");
+                    }
+                    user.setSpotifyId(null);
+                    user.setSpotifyEmail(null);
+                    userRepo.save(user);
+                    accessTokerepo.deleteByUserIdAndPlatform(userId, "spotify");
+                } else {
+                    if (user.getYoutubeId() == null) {
+                        throw new IllegalStateException("YouTube account is not connected");
+                    }
+                    if (user.getSpotifyId() == null) {
+                        throw new IllegalStateException("Cannot disconnect your only connected platform. Connect another platform before disconnecting.");
+                    }
+                    user.setYoutubeId(null);
+                    user.setYoutubeEmail(null);
+                    userRepo.save(user);
+                    accessTokerepo.deleteByUserIdAndPlatform(userId, "youtube");
+                    accessTokerepo.deleteByUserIdAndPlatform(userId, "google");
+                }
+                accessTokerepo.flush();
+                return null;
+            });
+        })
+        .subscribeOn(Schedulers.boundedElastic())
+        .doOnSuccess(v -> {
+            String normalized = platform.toLowerCase();
+            if (normalized.contains("spotify")) {
+                accessTokenCache.invalidate(userId, "spotify");
+            } else {
+                accessTokenCache.invalidate(userId, "youtube");
+                accessTokenCache.invalidate(userId, "google");
+            }
+        })
+        .then();
     }
 
     // ==========================================
@@ -258,15 +318,5 @@ public class UserService {
         log.info("Tokens saved for user {} on platform {}", userId, platform);
     }
 
-    private User findExistingUser(String provider, String principalName) {
-        if (provider.equals("spotify")) {
-            return userRepo.findBySpotifyId(principalName)
-                    .orElseThrow(() -> new RuntimeException("User not found for Spotify ID: " + principalName));
-        } else if (provider.equals("google") || provider.equals("youtube")) {
-            return userRepo.findByYoutubeId(principalName)
-                    .orElseThrow(() -> new RuntimeException("User not found for YouTube ID: " + principalName));
-        } else {
-            throw new RuntimeException("Unsupported existing provider: " + provider);
-        }
-    }
+
 }

@@ -80,9 +80,16 @@ public class YtmusicController {
             return Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing authenticated user"));
         }
 
-        return tokenProvider.withValidAccessToken(userId, "youtube",
-                        accessToken -> trackMatchingService.analyzeTrack(request, accessToken))
-                .onErrorResume(err -> trackMatchingService.analyzeTrack(request, null));
+        return tokenProvider.getValidAccessToken(userId, "youtube")
+                .thenReturn(true)
+                .doOnError(error -> log.warn("Could not load YouTube token for analysis; using InnerTube only: {}",
+                        error.getMessage()))
+                .onErrorReturn(false)
+                .defaultIfEmpty(false)
+                .flatMap(hasToken -> hasToken
+                        ? tokenProvider.withValidAccessToken(userId, "youtube",
+                                accessToken -> trackMatchingService.analyzeTrack(request, accessToken))
+                        : trackMatchingService.analyzeTrack(request, null));
     }
 
     @PostMapping("/playlists/create")
@@ -97,7 +104,7 @@ public class YtmusicController {
         }
 
         log.info("==> [YtmusicController] Creating YouTube playlist '{}' for user '{}'", request.getName(), userId);
-        return tokenProvider.withValidAccessToken(userId, "youtube",
+        return tokenProvider.withValidAccessTokenWithoutRetry(userId, "youtube",
                 accessToken -> youtubeApiClient.createPlaylist(request.getName(), request.getDescription(), accessToken));
     }
 
@@ -115,7 +122,7 @@ public class YtmusicController {
 
         log.info("==> [YtmusicController] Adding {} tracks to YouTube playlist '{}' for user '{}'",
                 request.getVideoIds() != null ? request.getVideoIds().size() : 0, playlistId, userId);
-        return tokenProvider.withValidAccessToken(userId, "youtube",
+        return tokenProvider.withValidAccessTokenWithoutRetry(userId, "youtube",
                 accessToken -> youtubeApiClient.addTracksToPlaylist(playlistId, request.getVideoIds(), accessToken));
     }
 

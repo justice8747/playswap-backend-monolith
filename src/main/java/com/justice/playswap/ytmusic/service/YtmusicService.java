@@ -10,6 +10,7 @@ import com.justice.playswap.ytmusic.model.TrackAnalysisRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
@@ -59,13 +60,16 @@ public class YtmusicService implements YtmusicOperations {
                 .isrc(track.getIsrc())
                 .build();
 
-        return tokenProvider.withValidAccessToken(userId, "youtube",
-                        accessToken -> trackMatchingService.analyzeTrack(request, accessToken))
-                .onErrorResume(err -> {
-                    // Try without accessToken if token retrieval fails (InnerTube tiers 2 & 3 work without tokens)
-                    log.warn("Attempting unauthenticated InnerTube search for '{}': {}", track.getTitle(), err.getMessage());
-                    return trackMatchingService.analyzeTrack(request, null);
-                })
+        return tokenProvider.getValidAccessToken(userId, "youtube")
+                .thenReturn(true)
+                .doOnError(error -> log.warn("Could not load YouTube token for '{}'; using InnerTube only: {}",
+                        track.getTitle(), error.getMessage()))
+                .onErrorReturn(false)
+                .defaultIfEmpty(false)
+                .flatMap(hasToken -> hasToken
+                        ? tokenProvider.withValidAccessToken(userId, "youtube",
+                                accessToken -> trackMatchingService.analyzeTrack(request, accessToken))
+                        : trackMatchingService.analyzeTrack(request, null))
                 .map(res -> TrackAnalysisResultDto.builder()
                         .spotifyTrackId(res.getSpotifyTrackId())
                         .title(res.getTitle())
@@ -80,7 +84,7 @@ public class YtmusicService implements YtmusicOperations {
     @Override
     public Mono<CreatePlaylistResponseDto> createPlaylist(String userId, String name, String description) {
         log.info("==> [YtmusicService] In-process create playlist '{}' for user '{}'", name, userId);
-        return tokenProvider.withValidAccessToken(userId, "youtube",
+        return tokenProvider.withValidAccessTokenWithoutRetry(userId, "youtube",
                         accessToken -> youtubeApiClient.createPlaylist(name, description, accessToken))
                 .map(res -> CreatePlaylistResponseDto.builder()
                         .playlistId(res.getPlaylistId())
@@ -93,14 +97,26 @@ public class YtmusicService implements YtmusicOperations {
     public Mono<Boolean> addTracksToPlaylist(String userId, String playlistId, List<String> videoIds) {
         log.info("==> [YtmusicService] In-process adding {} tracks to playlist '{}' for user '{}'",
                 videoIds != null ? videoIds.size() : 0, playlistId, userId);
-        return tokenProvider.withValidAccessToken(userId, "youtube",
-                accessToken -> youtubeApiClient.addTracksToPlaylist(playlistId, videoIds, accessToken));
+        long expectedTrackCount = videoIds == null ? 0 : videoIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .count();
+        return addTracksToPlaylistWithResults(userId, playlistId, videoIds)
+                .map(insertedIds -> insertedIds.size() == expectedTrackCount);
     }
 
     @Override
     public Mono<Set<String>> addTracksToPlaylistWithResults(String userId, String playlistId, List<String> videoIds) {
-        return tokenProvider.withValidAccessToken(userId, "youtube",
-                accessToken -> youtubeApiClient.addTracksToPlaylistWithResults(playlistId, videoIds, accessToken));
+        return Flux.fromIterable(videoIds == null ? List.<String>of() : videoIds)
+                .filter(id -> id != null && !id.isBlank())
+                .concatMap(videoId -> tokenProvider.withValidAccessToken(userId, "youtube",
+                                accessToken -> youtubeApiClient.addTracksToPlaylistWithResults(
+                                        playlistId, List.of(videoId), accessToken))
+                        .doOnError(error -> log.warn("Failed to add YouTube video {} to playlist {}: {}",
+                                videoId, playlistId, error.getMessage()))
+                        .onErrorResume(error -> Mono.just(Set.of())))
+                .flatMapIterable(ids -> ids)
+                .collect(Collectors.toSet());
     }
 
     @Override

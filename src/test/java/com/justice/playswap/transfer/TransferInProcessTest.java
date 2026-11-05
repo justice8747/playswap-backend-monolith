@@ -578,6 +578,67 @@ class TransferInProcessTest {
     }
 
     @Test
+    void retainsSpotifyPlaylistReferenceWhenRollbackIsNotSupported() {
+        UUID sessionId = UUID.randomUUID();
+        UUID jobId = UUID.randomUUID();
+        TransferSession session = TransferSession.builder()
+                .id(sessionId)
+                .sourcePlatform("YTMUSIC")
+                .targetPlatform("SPOTIFY")
+                .status("READY")
+                .build();
+        TransferJob job = TransferJob.builder()
+                .id(jobId)
+                .sessionId(sessionId)
+                .sourcePlaylistId("source-playlist")
+                .sourcePlaylistName("Top Hits")
+                .status("READY")
+                .build();
+        List<TransferItem> items = new java.util.ArrayList<>(java.util.stream.IntStream.range(0, 10)
+                .mapToObj(index -> TransferItem.builder()
+                        .id(UUID.randomUUID())
+                        .jobId(jobId)
+                        .sourceTrackId("source-" + index)
+                        .targetTrackId("target-" + index)
+                        .status(ItemStatus.PENDING.name())
+                        .build())
+                .toList());
+        when(sessionRepository.findById(sessionId)).thenReturn(Optional.of(session));
+        when(jobRepository.findBySessionId(sessionId)).thenReturn(List.of(job));
+        when(itemRepository.findByJobId(jobId)).thenReturn(items);
+
+        CreatePlaylistResponseDto created = CreatePlaylistResponseDto.builder()
+                .playlistId("spotify-playlist")
+                .playlistUrl("https://open.spotify.com/playlist/spotify-playlist")
+                .name("Top Hits (PlaySwap)")
+                .build();
+        when(spotifyOperations.createPlaylist(eq("user-1"), anyString(), anyString()))
+                .thenReturn(Mono.just(created));
+        when(spotifyOperations.addTracksToPlaylistWithResults(
+                eq("user-1"), eq("spotify-playlist"), anyList()))
+                .thenReturn(Mono.just(Set.of("target-0", "target-1", "target-2", "target-3",
+                        "target-4", "target-5", "target-6", "target-7")));
+
+        ExecuteTransferRequest request = ExecuteTransferRequest.builder()
+                .sessionId(sessionId)
+                .build();
+
+        StepVerifier.create(executionService.executeTransfer("user-1", request))
+                .assertNext(response -> {
+                    assertEquals(TransferStatus.FAILED.name(), response.getStatus());
+                    assertEquals("spotify-playlist",
+                            response.getTransferredPlaylists().get(0).getTargetPlaylistId());
+                })
+                .verifyComplete();
+
+        assertEquals("spotify-playlist", job.getTargetPlaylistId());
+        assertEquals("https://open.spotify.com/playlist/spotify-playlist", job.getTargetPlaylistUrl());
+        assertTrue(items.get(8).getErrorMessage().contains("rollback was partial"));
+        assertTrue(items.get(8).getErrorMessage().contains("Spotify playlist was retained"));
+        verify(spotifyOperations, never()).deletePlaylist(anyString(), anyString());
+    }
+
+    @Test
     void keepsPlaylistWhenAtLeastNinetyPercentOfMatchedTracksAreInserted() {
         UUID sessionId = UUID.randomUUID();
         UUID jobId = UUID.randomUUID();

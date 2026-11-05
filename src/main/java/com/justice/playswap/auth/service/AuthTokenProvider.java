@@ -38,6 +38,22 @@ public class AuthTokenProvider implements TokenProvider {
             String userIdStr,
             String platform,
             Function<String, Mono<T>> operation) {
+        return withValidAccessToken(userIdStr, platform, operation, true);
+    }
+
+    @Override
+    public <T> Mono<T> withValidAccessTokenWithoutRetry(
+            String userIdStr,
+            String platform,
+            Function<String, Mono<T>> operation) {
+        return withValidAccessToken(userIdStr, platform, operation, false);
+    }
+
+    private <T> Mono<T> withValidAccessToken(
+            String userIdStr,
+            String platform,
+            Function<String, Mono<T>> operation,
+            boolean retryUnauthorized) {
         return resolveKey(userIdStr, platform)
                 .flatMap(key -> getOrLoadToken(key, userIdStr)
                         .flatMap(accessToken -> Mono.defer(() -> operation.apply(accessToken))
@@ -46,8 +62,9 @@ public class AuthTokenProvider implements TokenProvider {
                                         return Mono.error(error);
                                     }
                                     return recoverUnauthorized(key, accessToken)
-                                            .flatMap(refreshedToken ->
-                                                    Mono.defer(() -> operation.apply(refreshedToken)));
+                                            .flatMap(refreshedToken -> retryUnauthorized
+                                                    ? Mono.defer(() -> operation.apply(refreshedToken))
+                                                    : Mono.error(error));
                                 })));
     }
 

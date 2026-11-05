@@ -10,6 +10,7 @@ import com.justice.playswap.transfer.dto.TrackAnalysisResultDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
@@ -69,7 +70,7 @@ public class SpotifyService implements SpotifyOperations {
     @Override
     public Mono<CreatePlaylistResponseDto> createPlaylist(String userId, String name, String description) {
         log.info("==> [SpotifyService] In-process create playlist '{}' for user '{}'", name, userId);
-        return tokenProvider.withValidAccessToken(userId, "spotify",
+        return tokenProvider.withValidAccessTokenWithoutRetry(userId, "spotify",
                         accessToken -> spotifyApiClient.createPlaylist(name, description, accessToken))
                 .map(res -> CreatePlaylistResponseDto.builder()
                         .playlistId(res.getPlaylistId())
@@ -82,14 +83,27 @@ public class SpotifyService implements SpotifyOperations {
     public Mono<Boolean> addTracksToPlaylist(String userId, String playlistId, List<String> trackIds) {
         log.info("==> [SpotifyService] In-process adding {} tracks to playlist '{}' for user '{}'",
                 trackIds != null ? trackIds.size() : 0, playlistId, userId);
-        return tokenProvider.withValidAccessToken(userId, "spotify",
-                accessToken -> spotifyApiClient.addTracksToPlaylist(playlistId, trackIds, accessToken));
+        long expectedTrackCount = trackIds == null ? 0 : trackIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .count();
+        return addTracksToPlaylistWithResults(userId, playlistId, trackIds)
+                .map(insertedIds -> insertedIds.size() == expectedTrackCount);
     }
 
     @Override
     public Mono<Set<String>> addTracksToPlaylistWithResults(String userId, String playlistId, List<String> trackIds) {
-        return tokenProvider.withValidAccessToken(userId, "spotify",
-                accessToken -> spotifyApiClient.addTracksToPlaylistWithResults(playlistId, trackIds, accessToken));
+        return Flux.fromIterable(trackIds == null ? List.<String>of() : trackIds)
+                .filter(id -> id != null && !id.isBlank())
+                .buffer(100)
+                .concatMap(batch -> tokenProvider.withValidAccessToken(userId, "spotify",
+                                accessToken -> spotifyApiClient.addTracksToPlaylistWithResults(
+                                        playlistId, batch, accessToken))
+                        .doOnError(error -> log.warn("Failed to add a Spotify batch of {} tracks to playlist {}: {}",
+                                batch.size(), playlistId, error.getMessage()))
+                        .onErrorResume(error -> Mono.just(Set.of())))
+                .flatMapIterable(ids -> ids)
+                .collect(Collectors.toSet());
     }
 
     @Override

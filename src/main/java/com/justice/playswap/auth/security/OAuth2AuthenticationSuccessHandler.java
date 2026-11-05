@@ -125,7 +125,7 @@ public class OAuth2AuthenticationSuccessHandler
                 .httpOnly(true)
                 .secure(isHttps)
                 .path("/")
-                .maxAge(Duration.ofDays(1))
+                .maxAge(Duration.ofDays(7))
                 .sameSite(isHttps ? "None" : "Lax")
                 .build();
 

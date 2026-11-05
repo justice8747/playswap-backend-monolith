@@ -92,8 +92,7 @@ public class TrackMatchingService {
                 })
                 .onErrorResume(error -> {
                     log.warn("Error during track analysis for '{}': {}", title, error.getMessage());
-                    if (error instanceof WebClientResponseException webClientError
-                            && webClientError.getStatusCode().value() == 401) {
+                    if (error instanceof WebClientResponseException) {
                         return Mono.error(error);
                     }
                     return Mono.just(buildFailedResult(request, "ANALYSIS_ERROR"));

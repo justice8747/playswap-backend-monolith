@@ -11,4 +11,9 @@ public interface TokenProvider {
             String userId,
             String platform,
             Function<String, Mono<T>> operation);
+
+    <T> Mono<T> withValidAccessTokenWithoutRetry(
+            String userId,
+            String platform,
+            Function<String, Mono<T>> operation);
 }

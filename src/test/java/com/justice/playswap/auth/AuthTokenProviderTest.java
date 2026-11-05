@@ -94,6 +94,31 @@ class AuthTokenProviderTest {
     }
 
     @Test
+    void refreshesButDoesNotReplayNonIdempotentOperationAfterUnauthorizedResponse() {
+        UUID userId = UUID.randomUUID();
+        AccessToken stored = token(userId, "spotify", "rejected-token", Instant.now().plusSeconds(3600));
+        AccessToken refreshed = token(userId, "spotify", "recovered-token", Instant.now().plusSeconds(3600));
+        when(userService.getTokens(userId, "spotify")).thenReturn(Mono.just(stored));
+        when(tokenRefreshService.refresh(stored, "spotify")).thenReturn(Mono.just(refreshed));
+        AtomicInteger operationCalls = new AtomicInteger();
+
+        StepVerifier.create(tokenProvider.withValidAccessTokenWithoutRetry(
+                        userId.toString(), "spotify", accessToken -> {
+                            operationCalls.incrementAndGet();
+                            return Mono.error(unauthorized());
+                        }))
+                .expectError(WebClientResponseException.class)
+                .verify();
+
+        StepVerifier.create(tokenProvider.getValidAccessToken(userId.toString(), "spotify"))
+                .expectNext("recovered-token")
+                .verifyComplete();
+
+        verify(tokenRefreshService, times(1)).refresh(stored, "spotify");
+        org.junit.jupiter.api.Assertions.assertEquals(1, operationCalls.get());
+    }
+
+    @Test
     void keepsTokensForDifferentPlatformsIndependent() {
         UUID userId = UUID.randomUUID();
         when(userService.getTokens(userId, "spotify"))
